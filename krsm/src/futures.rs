@@ -33,6 +33,7 @@ pub struct AsyncRuntime<
     has_unblock: RefCell<Option<(YieldReason, YieldResponse)>>,
     has_new_future: AtomicBool,
     pending_futures: RefCell<[Option<(YieldReason, usize)>; MAX_PENDING]>,
+    pending_futures_size: RefCell<usize>,
 }
 
 /// This error type is for future proofing only. It will always implement Debug.
@@ -48,11 +49,11 @@ pub enum AsyncRuntimeError {
 /// AsyncYield is a helper for KRSM async loops.
 ///
 /// This is useful when your async future contains two or more competing loops:
-///      `futures_lite::or(loop1, loop2, loop3).await`
+///      `futures_lite::or(loop1, loop2).await`
 ///
 /// Futures lite's parallel `or()` function always runs the loops in the same order.
-/// For loop2 to have a chance at executing, loop1 must yield, even when there isn't
-/// a real `YieldReason`.
+/// Yet if both `loop1` and `loop2` are waiting on the same YieldReason, then, `loop2`
+/// will never get a chance to run.
 ///
 /// In that case, loop1 can use AsyncYielder to yield until the other loops get a chance
 /// to run. But those other loops must also remember to `unblock()` us.
@@ -101,42 +102,6 @@ const RAW_WAKER_WITH_ASSERTIONS: RawWaker = {
 impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: usize>
     AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>
 {
-    /// Resolve currently pending Futures. Must call this at least once between run_async_step calls
-    pub fn unblock_futures(&self, future_type: YieldReason, status: YieldResponse) -> Result<()> {
-        let has_unblock = { self.has_unblock.borrow().is_some() };
-        if has_unblock {
-            return Err(AsyncRuntimeError::TooManyUnblocked);
-        }
-
-        self._remove_pending_future(future_type);
-        self.has_unblock.borrow_mut().replace((future_type, status));
-        Ok(())
-    }
-
-    fn _pending_futures_size(
-        &self,
-        pending_futures: &[Option<(YieldReason, usize)>; MAX_PENDING],
-    ) -> usize {
-        pending_futures
-            .binary_search_by(|x| None.cmp(x))
-            .unwrap_or(MAX_PENDING)
-    }
-
-    fn _remove_pending_future(&self, future_type: YieldReason) {
-        let mut pending_futures = self.pending_futures.borrow_mut();
-        let pending_futures_size = self._pending_futures_size(&pending_futures);
-        if let Ok(index) =
-            pending_futures.binary_search_by(|x| Some(future_type).cmp(&x.map(|v| v.0)))
-        {
-            let count = pending_futures[index].unwrap().1;
-            if count > 1 {
-                pending_futures[index] = Some((future_type, count - 1));
-            } else {
-                pending_futures.copy_within((index + 1)..pending_futures_size, index);
-            }
-        };
-    }
-
     /// Create a new instance of pending future.
     ///
     /// Your async code should have access to this method. This is the **primary method**
@@ -154,7 +119,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
         self.has_new_future.store(true, Ordering::Relaxed);
         {
             let mut pending_futures = self.pending_futures.borrow_mut();
-            let pending_futures_size = self._pending_futures_size(&pending_futures);
+            let pending_futures_size = self._pending_futures_size();
             let search_result =
                 pending_futures.binary_search_by(|x| Some(future_type).cmp(&x.map(|v| v.0)));
             match search_result {
@@ -164,6 +129,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
                     }
                     pending_futures.copy_within(index..pending_futures_size, index + 1);
                     pending_futures[index] = Some((future_type, 1));
+                    self.pending_futures_size.replace(pending_futures_size + 1);
                 }
                 Ok(index) => {
                     let count = pending_futures[index].unwrap().1;
@@ -175,6 +141,31 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
         guard.build().await
     }
 
+    /// This method is not meant to be called from within async.
+    ///
+    /// The caller of async runtime uses this to unblock the futures that caused the async step to yield.
+    /// Must call this at least once between run_async_step calls
+    pub fn unblock_futures(&self, future_type: YieldReason, status: YieldResponse) -> Result<()> {
+        let has_unblock = { self.has_unblock.borrow().is_some() };
+        if has_unblock {
+            return Err(AsyncRuntimeError::TooManyUnblocked);
+        }
+
+        self.has_unblock.borrow_mut().replace((future_type, status));
+        Ok(())
+    }
+
+    /// This method is not meant to be called from within async.
+    ///
+    /// This is a debugging and profiling utility meant to help the downstream programmer
+    /// measure how large MAX_PENDING should be, in order to create a large enough, but
+    /// finite, state machine, for their use cases.
+    pub fn _pending_futures_size(&self) -> usize {
+        *self.pending_futures_size.borrow()
+    }
+
+    /// This method is not meant to be called from within async.
+    ///
     /// This call is unsafe because it doesn't check whether `future` is pinned.
     ///
     /// You don't have to pass in a Pin<> but you have to make sure the pointer/reference is effectively
@@ -209,6 +200,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
         self.has_new_future.load(Ordering::Relaxed)
     }
 
+    /// Creates a new Async Runtime.
     /// This function returns a Result but currently has no error case.
     /// This return type is for future proofing only. (The Err type will always implement Debug.)
     pub fn new() -> Result<Self> {
@@ -216,6 +208,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
             has_unblock: RefCell::new(None),
             has_new_future: AtomicBool::default(),
             pending_futures: RefCell::new([const { None }; MAX_PENDING]),
+            pending_futures_size: RefCell::new(0),
         })
     }
 
@@ -230,7 +223,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
         F: FnMut(Option<YieldReason>) -> bool,
     {
         let pending_futures = self.pending_futures.borrow();
-        let end_idx = self._pending_futures_size(&pending_futures);
+        let end_idx = self._pending_futures_size();
         let Some(Some(reason)) = pending_futures[..end_idx]
             .iter()
             .find(|x| func(x.map(|v| v.0)))
@@ -238,40 +231,6 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
             return Ok(None);
         };
         Ok(Some(reason.0))
-    }
-
-    /// This method is not meant to be called from within async.
-    ///
-    /// It's meant to help the caller of async runtime remove futures that must never
-    /// be unblocked:
-    ///
-    /// * If your `YieldReason` is a simple C-like enum, there is no need to call this function.
-    /// * Otherwise, you should call this function once per async step, to avoid `AsyncRuntimeError::TooManyPending`
-    ///
-    /// The func callback must return `false` for any future they want to remove.
-    pub fn filter_valid_futures<F>(&self, mut func: F) -> Result<()>
-    where
-        F: FnMut(Option<YieldReason>) -> bool,
-    {
-        let mut pending_futures = self.pending_futures.borrow_mut();
-        let end_idx = self._pending_futures_size(&pending_futures);
-        let mut write_idx = 0;
-        for i in 0..end_idx {
-            if !func(pending_futures[i].map(|v| v.0)) {
-                continue;
-            }
-            if write_idx != i {
-                pending_futures[write_idx] = pending_futures[i];
-            }
-            write_idx += 1;
-        }
-
-        if write_idx < end_idx {
-            for i in write_idx..end_idx {
-                pending_futures[i] = None;
-            }
-        }
-        Ok(())
     }
 }
 
@@ -299,11 +258,27 @@ impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDI
     for FutureDropGuard<'a, YieldReason, YieldResponse, MAX_PENDING>
 {
     fn drop(&mut self) {
-        self.runtime._remove_pending_future(self.future_type);
+        let mut pending_futures = self.runtime.pending_futures.borrow_mut();
+        let pending_futures_size = self.runtime._pending_futures_size();
+        if let Ok(index) =
+            pending_futures.binary_search_by(|x| Some(self.future_type).cmp(&x.map(|v| v.0)))
+        {
+            let count = pending_futures[index].unwrap().1;
+            if count > 1 {
+                pending_futures[index] = Some((self.future_type, count - 1));
+            } else {
+                pending_futures.copy_within((index + 1)..pending_futures_size, index);
+                pending_futures[pending_futures_size - 1] = None;
+                self.runtime
+                    .pending_futures_size
+                    .replace(pending_futures_size - 1);
+            }
+        };
     }
 }
 
 impl AsyncYielder {
+    /// In the example from above, `loop1` calls this function yield to `loop2`
     pub async fn yield_now(&self) {
         let original_poll_num = { *self.num_polls.borrow() };
         futures_lite::future::poll_fn(|_| {
@@ -318,6 +293,8 @@ impl AsyncYielder {
         .await;
     }
 
+    /// In the example from above, as soon as `loop2` gets to execute and finishes its turn,
+    /// `loop2` must call this function, to allow `loop1` to run again.
     pub fn unblock(&self) {
         *self.num_polls.borrow_mut() += 1;
     }
@@ -329,7 +306,7 @@ mod tests {
     use crate::futures;
 
     /// This is just an example YieldReason.
-    #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
     #[repr(usize)]
     enum PtraceFutureTypes {
         WaitForPtraceSyscall,
@@ -352,15 +329,29 @@ mod tests {
         ));
     }
 
+    fn _assert_one_pending_at(runtime: &PtraceAsyncRuntime, idx: usize, reason: PtraceFutureTypes) {
+        assert_eq!(
+            {
+                let pending_futures = runtime.pending_futures.borrow();
+                pending_futures[idx]
+            },
+            Some((reason, 1))
+        );
+    }
+
     #[test]
     fn test_basic_blocking_on_built_future() {
         let runtime = PtraceAsyncRuntime::new().unwrap();
+        assert_eq!(runtime._pending_futures_size(), 0);
+
         let mut test_future = runtime.new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall);
         assert!(matches!(
             unsafe { runtime.run_async_step(&mut test_future) },
             Ok(None)
         ));
         assert!(runtime._has_new_blockage());
+        assert_eq!(runtime._pending_futures_size(), 1);
+        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
 
         // Unblock an irrelevant future
         let event1 = PtraceStatus {};
@@ -372,13 +363,17 @@ mod tests {
             Ok(None)
         ));
         assert!(!runtime._has_new_blockage());
+        assert_eq!(runtime._pending_futures_size(), 1);
+        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
 
         // Unblock the original future
         let event2 = PtraceStatus {};
         runtime
             .unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event2.clone())
             .unwrap();
+        assert_eq!(runtime._pending_futures_size(), 1);
         let output = unsafe { runtime.run_async_step(&mut test_future) };
+        assert_eq!(runtime._pending_futures_size(), 0);
         assert!(output == Ok(Some(Ok(event2))));
         assert!(!runtime._has_new_blockage());
     }
@@ -527,13 +522,18 @@ mod tests {
             Ok(None)
         ));
         assert!(runtime._has_new_blockage());
+        assert_eq!(runtime._pending_futures_size(), 2);
+        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
+        _assert_one_pending_at(&runtime, 1, PtraceFutureTypes::WaitForPtraceSyscall);
 
         // Unblock the first future
         let event = PtraceStatus {};
         runtime
             .unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event.clone())
             .unwrap();
+        assert_eq!(runtime._pending_futures_size(), 2);
         let output = unsafe { runtime.run_async_step(&mut test_future) };
+        assert_eq!(runtime._pending_futures_size(), 1);
         assert!(output == Ok(Some(Ok(234))));
         assert!(!runtime._has_new_blockage());
     }
@@ -560,13 +560,19 @@ mod tests {
             Ok(None)
         ));
         assert!(runtime._has_new_blockage());
+        assert_eq!(runtime._pending_futures_size(), 2);
+        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
+        _assert_one_pending_at(&runtime, 1, PtraceFutureTypes::WaitForPtraceSyscall);
 
         // Unblock the second future
         let event = PtraceStatus {};
         runtime
             .unblock_futures(PtraceFutureTypes::WaitForSignal, event.clone())
             .unwrap();
+        assert_eq!(runtime._pending_futures_size(), 2);
         let output = unsafe { runtime.run_async_step(&mut test_future) };
+        assert_eq!(runtime._pending_futures_size(), 1);
+        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
         assert!(output == Ok(Some(Ok(456))));
         assert!(!runtime._has_new_blockage());
     }
