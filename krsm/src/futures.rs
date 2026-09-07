@@ -197,7 +197,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
             has_unblock: RefCell::new(None),
             has_new_future: AtomicBool::default(),
             pending_futures: RefCell::new([const { None }; MAX_PENDING]),
-            pending_futures_size: RefCell::new(0)
+            pending_futures_size: RefCell::new(0),
         })
     }
 
@@ -258,7 +258,9 @@ impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDI
             } else {
                 pending_futures.copy_within((index + 1)..pending_futures_size, index);
                 pending_futures[pending_futures_size - 1] = None;
-                self.runtime.pending_futures_size.replace(pending_futures_size - 1);
+                self.runtime
+                    .pending_futures_size
+                    .replace(pending_futures_size - 1);
             }
         };
     }

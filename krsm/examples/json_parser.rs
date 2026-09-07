@@ -512,14 +512,22 @@ where
         // Decide which future to unblock, with different priorities (normal > lowpri)
         let unblock_reason_normal = runtime
             .check_pending_reasons(|reason| match reason {
-                Some(JsonParserYieldReason::LiteralArrayStart(j)) => single_char == "[" && index == j,
+                Some(JsonParserYieldReason::LiteralArrayStart(j)) => {
+                    single_char == "[" && index == j
+                }
                 Some(JsonParserYieldReason::LiteralArrayEnd(j)) => single_char == "]" && index == j,
-                Some(JsonParserYieldReason::LiteralObjectStart(j)) => single_char == "{" && index == j,
-                Some(JsonParserYieldReason::LiteralObjectEnd(j)) => single_char == "}" && index == j,
+                Some(JsonParserYieldReason::LiteralObjectStart(j)) => {
+                    single_char == "{" && index == j
+                }
+                Some(JsonParserYieldReason::LiteralObjectEnd(j)) => {
+                    single_char == "}" && index == j
+                }
                 Some(JsonParserYieldReason::LiteralStringStart(j)) => {
                     &full_str[index..index + 1] == "\"" && index == j
                 }
-                Some(JsonParserYieldReason::LiteralStringEnd(j)) => single_char == "\"" && index == j,
+                Some(JsonParserYieldReason::LiteralStringEnd(j)) => {
+                    single_char == "\"" && index == j
+                }
                 Some(JsonParserYieldReason::LiteralColon(j)) => single_char == ":" && index == j,
                 Some(JsonParserYieldReason::LiteralComma(j)) => single_char == "," && index == j,
                 Some(JsonParserYieldReason::LiteralPeriod(j)) => single_char == "." && index == j,
@@ -533,7 +541,9 @@ where
                     full_str[index..].starts_with("null") && index == j
                 }
                 Some(JsonParserYieldReason::LiteralSlash(j)) => single_char == "\\" && index == j,
-                Some(JsonParserYieldReason::LiteralHexEscapeChar(j)) => single_char == "u" && index == j,
+                Some(JsonParserYieldReason::LiteralHexEscapeChar(j)) => {
+                    single_char == "u" && index == j
+                }
                 Some(JsonParserYieldReason::RegexCharAnyExceptQuoteOrSlash(j)) => {
                     single_char != "\"" && single_char != "\\" && index == j
                 }
@@ -549,7 +559,9 @@ where
                 Some(JsonParserYieldReason::RegexCharInDigit(j)) => {
                     "0123456789".contains(single_char) && index == j
                 }
-                Some(JsonParserYieldReason::RegexCharNumberSign(j)) => "+-".contains(single_char) && index == j,
+                Some(JsonParserYieldReason::RegexCharNumberSign(j)) => {
+                    "+-".contains(single_char) && index == j
+                }
                 Some(JsonParserYieldReason::RegexCharWhitespace(j)) => {
                     " \t\n\r".contains(single_char) && index == j
                 }
