@@ -512,46 +512,46 @@ where
         // Decide which future to unblock, with different priorities (normal > lowpri)
         let unblock_reason_normal = runtime
             .check_pending_reasons(|reason| match reason {
-                Some(JsonParserYieldReason::LiteralArrayStart(_)) => single_char == "[",
-                Some(JsonParserYieldReason::LiteralArrayEnd(_)) => single_char == "]",
-                Some(JsonParserYieldReason::LiteralObjectStart(_)) => single_char == "{",
-                Some(JsonParserYieldReason::LiteralObjectEnd(_)) => single_char == "}",
-                Some(JsonParserYieldReason::LiteralStringStart(_)) => {
-                    &full_str[index..index + 1] == "\""
+                Some(JsonParserYieldReason::LiteralArrayStart(j)) => single_char == "[" && index == j,
+                Some(JsonParserYieldReason::LiteralArrayEnd(j)) => single_char == "]" && index == j,
+                Some(JsonParserYieldReason::LiteralObjectStart(j)) => single_char == "{" && index == j,
+                Some(JsonParserYieldReason::LiteralObjectEnd(j)) => single_char == "}" && index == j,
+                Some(JsonParserYieldReason::LiteralStringStart(j)) => {
+                    &full_str[index..index + 1] == "\"" && index == j
                 }
-                Some(JsonParserYieldReason::LiteralStringEnd(_)) => single_char == "\"",
-                Some(JsonParserYieldReason::LiteralColon(_)) => single_char == ":",
-                Some(JsonParserYieldReason::LiteralComma(_)) => single_char == ",",
-                Some(JsonParserYieldReason::LiteralPeriod(_)) => single_char == ".",
-                Some(JsonParserYieldReason::LiteralTrue(_)) => {
-                    full_str[index..].starts_with("true")
+                Some(JsonParserYieldReason::LiteralStringEnd(j)) => single_char == "\"" && index == j,
+                Some(JsonParserYieldReason::LiteralColon(j)) => single_char == ":" && index == j,
+                Some(JsonParserYieldReason::LiteralComma(j)) => single_char == "," && index == j,
+                Some(JsonParserYieldReason::LiteralPeriod(j)) => single_char == "." && index == j,
+                Some(JsonParserYieldReason::LiteralTrue(j)) => {
+                    full_str[index..].starts_with("true") && index == j
                 }
-                Some(JsonParserYieldReason::LiteralFalse(_)) => {
-                    full_str[index..].starts_with("false")
+                Some(JsonParserYieldReason::LiteralFalse(j)) => {
+                    full_str[index..].starts_with("false") && index == j
                 }
-                Some(JsonParserYieldReason::LiteralNull(_)) => {
-                    full_str[index..].starts_with("null")
+                Some(JsonParserYieldReason::LiteralNull(j)) => {
+                    full_str[index..].starts_with("null") && index == j
                 }
-                Some(JsonParserYieldReason::LiteralSlash(_)) => single_char == "\\",
-                Some(JsonParserYieldReason::LiteralHexEscapeChar(_)) => single_char == "u",
-                Some(JsonParserYieldReason::RegexCharAnyExceptQuoteOrSlash(_)) => {
-                    single_char != "\"" && single_char != "\\"
+                Some(JsonParserYieldReason::LiteralSlash(j)) => single_char == "\\" && index == j,
+                Some(JsonParserYieldReason::LiteralHexEscapeChar(j)) => single_char == "u" && index == j,
+                Some(JsonParserYieldReason::RegexCharAnyExceptQuoteOrSlash(j)) => {
+                    single_char != "\"" && single_char != "\\" && index == j
                 }
-                Some(JsonParserYieldReason::RegexEscapedCharAfterSlash(_)) => {
-                    "\"\\/bfnrt".contains(single_char)
+                Some(JsonParserYieldReason::RegexEscapedCharAfterSlash(j)) => {
+                    "\"\\/bfnrt".contains(single_char) && index == j
                 }
-                Some(JsonParserYieldReason::RegexCharExponent(_)) => {
-                    single_char == "e" || single_char == "E"
+                Some(JsonParserYieldReason::RegexCharExponent(j)) => {
+                    (single_char == "e" || single_char == "E") && index == j
                 }
-                Some(JsonParserYieldReason::RegexCharInHex(_)) => {
-                    "0123456789abcdefABCDEF".contains(single_char)
+                Some(JsonParserYieldReason::RegexCharInHex(j)) => {
+                    "0123456789abcdefABCDEF".contains(single_char) && index == j
                 }
-                Some(JsonParserYieldReason::RegexCharInDigit(_)) => {
-                    "0123456789".contains(single_char)
+                Some(JsonParserYieldReason::RegexCharInDigit(j)) => {
+                    "0123456789".contains(single_char) && index == j
                 }
-                Some(JsonParserYieldReason::RegexCharNumberSign(_)) => "+-".contains(single_char),
-                Some(JsonParserYieldReason::RegexCharWhitespace(_)) => {
-                    " \t\n\r".contains(single_char)
+                Some(JsonParserYieldReason::RegexCharNumberSign(j)) => "+-".contains(single_char) && index == j,
+                Some(JsonParserYieldReason::RegexCharWhitespace(j)) => {
+                    " \t\n\r".contains(single_char) && index == j
                 }
                 _ => false,
             })
