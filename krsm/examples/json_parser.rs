@@ -509,35 +509,7 @@ where
 
         let single_char = &full_str[index..index + 1];
 
-        // First, deprecate futures waiting for old indices we already processed
-        runtime
-            .filter_valid_futures(|reason| match reason {
-                Some(JsonParserYieldReason::LiteralArrayStart(j)) => j == index,
-                Some(JsonParserYieldReason::LiteralArrayEnd(j)) => j == index,
-                Some(JsonParserYieldReason::LiteralObjectStart(j)) => j == index,
-                Some(JsonParserYieldReason::LiteralObjectEnd(j)) => j == index,
-                Some(JsonParserYieldReason::LiteralStringStart(j)) => j == index,
-                Some(JsonParserYieldReason::LiteralStringEnd(j)) => j == index,
-                Some(JsonParserYieldReason::LiteralColon(j)) => j == index,
-                Some(JsonParserYieldReason::LiteralComma(j)) => j == index,
-                Some(JsonParserYieldReason::LiteralPeriod(j)) => j == index,
-                Some(JsonParserYieldReason::LiteralTrue(j)) => j == index,
-                Some(JsonParserYieldReason::LiteralFalse(j)) => j == index,
-                Some(JsonParserYieldReason::LiteralNull(j)) => j == index,
-                Some(JsonParserYieldReason::LiteralSlash(j)) => j == index,
-                Some(JsonParserYieldReason::LiteralHexEscapeChar(j)) => j == index,
-                Some(JsonParserYieldReason::RegexCharAnyExceptQuoteOrSlash(j)) => j == index,
-                Some(JsonParserYieldReason::RegexEscapedCharAfterSlash(j)) => j == index,
-                Some(JsonParserYieldReason::RegexCharExponent(j)) => j == index,
-                Some(JsonParserYieldReason::RegexCharInHex(j)) => j == index,
-                Some(JsonParserYieldReason::RegexCharInDigit(j)) => j == index,
-                Some(JsonParserYieldReason::RegexCharNumberSign(j)) => j == index,
-                Some(JsonParserYieldReason::RegexCharWhitespace(j)) => j == index,
-                _ => true,
-            })
-            .map_err(|e| format!("Internal error: {:?}", e))?;
-
-        // Then, decide which future to unblock (normal > lowpri)
+        // Decide which future to unblock, with different priorities (normal > lowpri)
         let unblock_reason_normal = runtime
             .check_pending_reasons(|reason| match reason {
                 Some(JsonParserYieldReason::LiteralArrayStart(_)) => single_char == "[",
