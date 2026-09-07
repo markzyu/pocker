@@ -13,10 +13,10 @@ workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-pocker-executor = {path = "../executor"}
-pocker-procfs = {path = "../procfs"}
-pocker-ptrace = {path = "../ptrace"}
-pocker-sysaug = {path = "../sysaug"}
+pocker-executor = {path = "../executor", version = "0.2"}
+pocker-procfs = {path = "../procfs", version = "0.2"}
+pocker-ptrace = {path = "../ptrace", version = "0.2"}
+pocker-sysaug = {path = "../sysaug", version = "0.2"}
 clap = { version = "4", features = ["derive"] }
 thiserror = "1.0.25"
 tracing = "0.1.26"

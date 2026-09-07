@@ -13,8 +13,8 @@ workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-krsm = {path = "../krsm"}
-pocker-ptrace = {path = "../ptrace"}
+krsm = {path = "../krsm", version = "0.3"}
+pocker-ptrace = {path = "../ptrace", version = "0.2"}
 futures-lite = "2.6.1"
 lazy_static = "1.4.0"
 libc = "0.2.189"

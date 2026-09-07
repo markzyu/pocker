@@ -13,10 +13,10 @@ workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-pocker-executor = {path = "../executor"}
-krsm = {path = "../krsm"}
-pocker-procfs = {path = "../procfs"}
-pocker-ptrace = {path = "../ptrace"}
+pocker-executor = {path = "../executor", version = "0.2"}
+krsm = {path = "../krsm", version = "0.3"}
+pocker-procfs = {path = "../procfs", version = "0.2"}
+pocker-ptrace = {path = "../ptrace", version = "0.2"}
 lazy_static = "1.4.0"
 libc = "0.2.189"
 nix = {version = "0.31.3", features = ["feature", "user"]}
