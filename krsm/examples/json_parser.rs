@@ -596,7 +596,12 @@ where
         }
 
         // Note: This is technically wrong for LiteralTrue, LiteralFalse, LiteralNull. But it's enough for this example.
-        println!("Debug, unblocking {:?}, str {}", unblock_reason, response);
+        println!(
+            "Debug, unblocking {:?}, str {}, pending_size: {}",
+            unblock_reason,
+            response,
+            runtime._pending_futures_size()
+        );
         runtime
             .unblock_futures(unblock_reason, response)
             .map_err(|e| format!("Internal error: {:?}", e))?;
