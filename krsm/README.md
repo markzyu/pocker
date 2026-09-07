@@ -1,6 +1,6 @@
 # KRSM: KRSM Rust State Machine
 
-This crate is a simple, single threaded, pinned async runtime for futures. This runtime:
+This crate is a single-threaded, pinned, no_std async runtime for futures. This runtime:
 
 * Runs all async futures within the current thread
 * Does not risk blocking the current thread permanently
@@ -15,7 +15,7 @@ Instead, KRSM lets the downstream define yields and take control of each individ
 
 This library aims to be a bare minimum abstraction of Rust compiler's ability to translate async functions into pollable state machines. The goal is to write huge, single-threaded, determinstic state machines using asynchronous descriptions.
 
-Please check out the example state machines in `krsm/examples`.
+Please check out the example state machines in [the `examples` folder](https://github.com/markzyu/pocker/tree/master/krsm/examples).
 
 ## Caveat 1: Extra constraints on `async` syntax
 
@@ -47,8 +47,12 @@ Upon hitting this limit, all further async calls will fail due to `AsyncRuntimeE
 
 Or, if it must be a complex enum:
 
-* Minimize the possible `YieldReason` variants in flight during any single async step, and
-* Cleanup any such reason that might expire using `AsyncRuntime.filter_valid_futures`
+* Please choose a concise representation for `YieldReason`, so that there are less variants in flight during any single async step, and
+* Please choose a `MAX_PENDING` value that can accomodate the maximum `_pending_futures_size()` of your biggest use case
+
+Alternatively, if your business logics can establish error boundaries, please handle `AsyncRuntimeError::TooManyPending` by rejecting the offending requests. It is a Result returned within the async logics, and it can be recoverable.
+
+Ultimately, KRSM is a finite state machine (FSM). The size of its internal state is fixed at compilation time. Please be aware of these limits. If your use cases need to scale, then you most likely need a different async runtime.
 
 ## License
 
