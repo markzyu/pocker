@@ -27,12 +27,15 @@ Your async code must satisfy both of the following conditions:
 As a result:
 
 * Unblocking multiple futures in one turn can lead to undefined behaviors and is forbidden.
-* The downstream caller must properly prioritize the pending futures, to choose only one when unblocking the state machine.
-* The downstream caller might need to "filter" out expired futures which were not prioritized in time.
+* The downstream caller must properly prioritize between different `YieldReason` reasons, to choose only one reason when unblocking the state machine.
+
+And worst of all:
+
+* If two branches of `futures_lite::future::or` are awaiting on the exact same `YieldReason`, then only the first future branch will be unblocked. The first being the first in the order of the `or()` function params.
 
 Thus, there is very little margin of error in the resulting code. And two versions code might look equivalent when only one of them is correct.
 
-## Caveat 2: If `YieldReason` is a Complex Enum:
+## Caveat 2: Limitations on the size of `YieldReason` enum
 
 This crate is `no_std` and cannot allocate additional heap memory at runtime. If your `YieldReason` is a simple, C-like Enum, this doesn't pose a problem until you have 1000+ variants of `YieldReason`.
 
@@ -42,10 +45,6 @@ However, if your YieldReason is a complex enum, then:
 * This number is `MAX_PENDING` and can be controlled at compile time, through Rust const generics.
 
 Upon hitting this limit, all further async calls will fail due to `AsyncRuntimeError::TooManyPending`. To avoid this scenario, it's recommended to
-
-* Use a simple C-like Enum as `YieldReason` if possible.
-
-Or, if it must be a complex enum:
 
 * Please choose a concise representation for `YieldReason`, so that there are less variants in flight during any single async step, and
 * Please choose a `MAX_PENDING` value that can accomodate the maximum `_pending_futures_size()` of your biggest use case
