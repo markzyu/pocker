@@ -71,14 +71,14 @@ impl<'a> TrafficLight<'a> {
                 self.runtime
                     .new_pending_future(TrafficLightYieldReason::SensorRelease)
                     .await?;
-                self._sleep_and_print("🟢", SENSOR_RELEASE_DURATION).await?;
+                self._sleep_and_print("[G]🟢", SENSOR_RELEASE_DURATION).await?;
 
                 Ok(())
             },
             // Note: the ordering matters here. if the async
             // block from above is placed at the end instead,
             // then the wait for sensor release never.gets unblocked.
-            self._sleep_and_print("🟢", GREEN_LIGHT_DURATION),
+            self._sleep_and_print("[G]🟢", GREEN_LIGHT_DURATION),
         )
         .await?;
 
@@ -86,7 +86,7 @@ impl<'a> TrafficLight<'a> {
     }
 
     async fn _yellow_light(&self) -> TResult<()> {
-        self._sleep_and_print("🟡", YELLOW_LIGHT_DURATION).await?;
+        self._sleep_and_print("[Y]🟡", YELLOW_LIGHT_DURATION).await?;
         self._red_light().await
     }
 
@@ -97,10 +97,10 @@ impl<'a> TrafficLight<'a> {
                     .new_pending_future(TrafficLightYieldReason::SensorAcquire)
                     .await?;
 
-                self._sleep_and_print("🔴", SENSOR_ACQUIRE_DURATION).await?;
+                self._sleep_and_print("[R]🔴", SENSOR_ACQUIRE_DURATION).await?;
                 Ok(())
             },
-            self._sleep_and_print("🔴", RED_LIGHT_DURATION),
+            self._sleep_and_print("[R]🔴", RED_LIGHT_DURATION),
         )
         .await?;
 

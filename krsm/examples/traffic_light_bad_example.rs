@@ -47,7 +47,7 @@ impl<'a> TrafficLight<'a> {
     }
 
     async fn _green_light(&self) -> TResult<()> {
-        print!("🟢");
+        print!("[G]🟢");
 
         let timer = GREEN_LIGHT_DURATION + self.start_time.elapsed();
         futures_lite::future::or(
@@ -74,7 +74,7 @@ impl<'a> TrafficLight<'a> {
     }
 
     async fn _yellow_light(&self) -> TResult<()> {
-        print!("🟡");
+        print!("[Y]🟡");
 
         let timer = YELLOW_LIGHT_DURATION + self.start_time.elapsed();
         self.runtime
@@ -85,7 +85,7 @@ impl<'a> TrafficLight<'a> {
     }
 
     async fn _red_light(&self) -> TResult<()> {
-        print!("🔴");
+        print!("[R]🔴");
 
         let timer = RED_LIGHT_DURATION + self.start_time.elapsed();
         futures_lite::future::or(
