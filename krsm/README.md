@@ -17,7 +17,7 @@ This library aims to be a bare minimum abstraction of Rust compiler's ability to
 
 Please check out the example state machines in [the `examples` folder](https://github.com/markzyu/pocker/tree/master/krsm/examples).
 
-It'd feel a lot like you are writing old "stack ripping" non-blocking synchronous code. It even still has the switch cases, except some of that spaghetti is now managed by the Rust compiler.
+This crate will not eliminate the need for a non blocking I/O. That part happens outside async. This "synchronous" part would feel a lot like you are writing old "stack ripping" non-blocking code. It even still has the `YieldReason` switch cases, except some of that spaghetti is now managed by the Rust compiler, and written as async functions.
 
 ## Caveat 1: Extra constraints on `async` syntax
 
