@@ -51,8 +51,6 @@ impl<'a> TrafficLight<'a> {
 
         let timer = GREEN_LIGHT_DURATION + self.start_time.elapsed();
         futures_lite::future::or(
-            self.runtime
-                .new_pending_future(TrafficLightYieldReason::Timer(timer)),
             async {
                 self.runtime
                     .new_pending_future(TrafficLightYieldReason::SensorRelease)
@@ -64,6 +62,11 @@ impl<'a> TrafficLight<'a> {
                     .await?;
                 Ok(())
             },
+            // Note: the ordering matters here. if the async
+            // block from above is placed at the end instead,
+            // then the wait for sensor release never.gets unblocked.
+            self.runtime
+                .new_pending_future(TrafficLightYieldReason::Timer(timer)),
         )
         .await?;
 
@@ -86,8 +89,6 @@ impl<'a> TrafficLight<'a> {
 
         let timer = RED_LIGHT_DURATION + self.start_time.elapsed();
         futures_lite::future::or(
-            self.runtime
-                .new_pending_future(TrafficLightYieldReason::Timer(timer)),
             async {
                 self.runtime
                     .new_pending_future(TrafficLightYieldReason::SensorAcquire)
@@ -99,6 +100,8 @@ impl<'a> TrafficLight<'a> {
                     .await?;
                 Ok(())
             },
+            self.runtime
+                .new_pending_future(TrafficLightYieldReason::Timer(timer)),
         )
         .await?;
 
