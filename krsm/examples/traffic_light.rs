@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 /// Reasons that can cause the finite state machine to transition between states
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum TrafficLightYieldReason {
-    /// It's time for the light to change
-    Timer(Duration),
+    /// Timer ticks by 500ms with other updates
+    TimerTick,
     /// Lane sensors decide that this light can be green
     SensorAcquire,
     /// Lane sensors decide taht this light can stop being green
@@ -46,27 +46,39 @@ impl<'a> TrafficLight<'a> {
         self.start_time.elapsed()
     }
 
-    async fn _green_light(&self) -> TResult<()> {
-        print!("🟢");
+    async fn _sleep_and_print(&self, light: &'static str, duration: Duration) -> TResult<()> {
+        let start = self.elapsed();
+        loop {
+            // print the countdown (+1 to round up)
+            print!(
+                "{}{}",
+                light,
+                (start + duration - self.elapsed()).as_secs() + 1
+            );
+            self.runtime
+                .new_pending_future(TrafficLightYieldReason::TimerTick)
+                .await?;
+            if self.elapsed() - start > duration {
+                break;
+            }
+        }
+        Ok(())
+    }
 
-        let timer = GREEN_LIGHT_DURATION + self.start_time.elapsed();
+    async fn _green_light(&self) -> TResult<()> {
         futures_lite::future::or(
             async {
                 self.runtime
                     .new_pending_future(TrafficLightYieldReason::SensorRelease)
                     .await?;
+                self._sleep_and_print("🟢", SENSOR_RELEASE_DURATION).await?;
 
-                let new_timer = SENSOR_RELEASE_DURATION + self.start_time.elapsed();
-                self.runtime
-                    .new_pending_future(TrafficLightYieldReason::Timer(new_timer))
-                    .await?;
                 Ok(())
             },
             // Note: the ordering matters here. if the async
             // block from above is placed at the end instead,
             // then the wait for sensor release never.gets unblocked.
-            self.runtime
-                .new_pending_future(TrafficLightYieldReason::Timer(timer)),
+            self._sleep_and_print("🟢", GREEN_LIGHT_DURATION),
         )
         .await?;
 
@@ -74,34 +86,21 @@ impl<'a> TrafficLight<'a> {
     }
 
     async fn _yellow_light(&self) -> TResult<()> {
-        print!("🟡");
-
-        let timer = YELLOW_LIGHT_DURATION + self.start_time.elapsed();
-        self.runtime
-            .new_pending_future(TrafficLightYieldReason::Timer(timer))
-            .await?;
-
+        self._sleep_and_print("🟡", YELLOW_LIGHT_DURATION).await?;
         self._red_light().await
     }
 
     async fn _red_light(&self) -> TResult<()> {
-        print!("🔴");
-
-        let timer = RED_LIGHT_DURATION + self.start_time.elapsed();
         futures_lite::future::or(
             async {
                 self.runtime
                     .new_pending_future(TrafficLightYieldReason::SensorAcquire)
                     .await?;
 
-                let new_timer = SENSOR_ACQUIRE_DURATION + self.start_time.elapsed();
-                self.runtime
-                    .new_pending_future(TrafficLightYieldReason::Timer(new_timer))
-                    .await?;
+                self._sleep_and_print("🔴", SENSOR_ACQUIRE_DURATION).await?;
                 Ok(())
             },
-            self.runtime
-                .new_pending_future(TrafficLightYieldReason::Timer(timer)),
+            self._sleep_and_print("🔴", RED_LIGHT_DURATION),
         )
         .await?;
 
@@ -137,61 +136,41 @@ fn main() -> std::io::Result<()> {
         // Async step finished. Flush stdout to ensure any output is shown
         stdout.flush()?;
 
-        // Create a subloop to wait for a valid timer or a user input
-        // This subloop should not be blocking for more than 1 second at a time.
-        let mut should_clear_stdout = true;
-        loop {
-            // Call runtime.check_pending_reasons to see whether we've hit a timer
-            let hit_timer = runtime
-                .check_pending_reasons(|reason| match reason {
-                    Some(TrafficLightYieldReason::Timer(timer)) => traffic_light.elapsed() >= timer,
-                    _ => false,
-                })
-                .unwrap();
-
-            if let Some(timer_reason) = hit_timer {
-                runtime.unblock_futures(timer_reason, ()).unwrap();
-                break;
-            }
-
-            // Otherwise, check user input with a 500ms timeout
-            if crossterm::event::poll(Duration::from_millis(500))? {
-                if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
-                    let has_ctrl = key
-                        .modifiers
-                        .contains(crossterm::event::KeyModifiers::CONTROL);
-                    if key.code == crossterm::event::KeyCode::Char('c') && has_ctrl {
-                        crossterm::terminal::disable_raw_mode()?;
-                        println!("");
-                        println!("Exiting...");
-                        return Ok(());
-                    }
-                    if key.code == crossterm::event::KeyCode::Char('y') {
-                        runtime
-                            .unblock_futures(TrafficLightYieldReason::SensorAcquire, ())
-                            .unwrap();
-
-                        // The state machine will still wait for SENSOR_ACQUIRE_DURATION
-                        // So, we don't clear stdout for now
-                        should_clear_stdout = false;
-                        break;
-                    }
-                    if key.code == crossterm::event::KeyCode::Char('n') {
-                        runtime
-                            .unblock_futures(TrafficLightYieldReason::SensorRelease, ())
-                            .unwrap();
-
-                        // The state machine will still wait for SENSOR_RELEASE_DURATION
-                        // So, we don't clear stdout for now
-                        should_clear_stdout = false;
-                        break;
-                    }
+        let mut is_sensor = false;
+        // check user input with a 500ms timeout
+        if crossterm::event::poll(Duration::from_millis(500))? {
+            if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
+                let has_ctrl = key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL);
+                if key.code == crossterm::event::KeyCode::Char('c') && has_ctrl {
+                    crossterm::terminal::disable_raw_mode()?;
+                    println!("");
+                    println!("Exiting...");
+                    return Ok(());
+                }
+                if key.code == crossterm::event::KeyCode::Char('y') {
+                    runtime
+                        .unblock_futures(TrafficLightYieldReason::SensorAcquire, ())
+                        .unwrap();
+                    is_sensor = true;
+                }
+                if key.code == crossterm::event::KeyCode::Char('n') {
+                    runtime
+                        .unblock_futures(TrafficLightYieldReason::SensorRelease, ())
+                        .unwrap();
+                    is_sensor = true;
                 }
             }
         }
 
-        // Reset terminal output so we don't keep creating more lines/outputs
-        if should_clear_stdout {
+        if !is_sensor {
+            // no keyboard input, do a timer tick
+            runtime
+                .unblock_futures(TrafficLightYieldReason::TimerTick, ())
+                .unwrap();
+
+            // Reset terminal output so we don't keep creating more lines/outputs
             crossterm::execute!(
                 stdout,
                 crossterm::cursor::MoveToColumn(0),
