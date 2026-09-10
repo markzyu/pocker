@@ -31,9 +31,9 @@ As a result:
 
 And worst of all:
 
-* If two branches of `futures_lite::future::or` are awaiting on the exact same `YieldReason`, then only the first future branch will be unblocked. The first being the first in the order of the `or()` function params.
+* If two branches of `futures_lite::future::or` are awaiting on the exact same `YieldReason`, then only the first future branch will be unblocked. And, the order for "the first" await is the same as the `or()` function parameters' order.
 
-Thus, there is very little margin of error in the resulting code. And two versions code might look equivalent when only one of them is correct.
+Thus, there is very little margin of error in the resulting code. And two versions of code might look equivalent when only one of them is correct.
 
 ## Caveat 2: Limitations on the size of `YieldReason` enum
 
