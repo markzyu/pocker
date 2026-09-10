@@ -50,7 +50,11 @@ impl<'a> TrafficLight<'a> {
         let start = self.elapsed();
         loop {
             // print the countdown (+1 to round up)
-            print!("{}{}", light, (start + duration - self.elapsed()).as_secs() + 1);
+            print!(
+                "{}{}",
+                light,
+                (start + duration - self.elapsed()).as_secs() + 1
+            );
             self.runtime
                 .new_pending_future(TrafficLightYieldReason::TimerTick)
                 .await?;
