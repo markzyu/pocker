@@ -13,9 +13,11 @@ Instead, KRSM lets the downstream define yields and take control of each individ
 
 ## Goal
 
-This library aims to be a bare minimum abstraction of Rust compiler's ability to translate async functions into pollable state machines. The goal is to write huge, single-threaded, determinstic state machines using asynchronous descriptions.
+This library aims to be a bare minimum abstraction of Rust compiler's ability to translate async functions into pollable state machines. The goal is to write non-blocking, single-threaded, determinstic state machines using readable, asynchronous descriptions.
 
 Please check out the example state machines in [the `examples` folder](https://github.com/markzyu/pocker/tree/master/krsm/examples).
+
+It'd feel a lot like you are writing old "stack ripping" non-blocking synchronous code. It even still has the switch cases, except some of that spaghetti is now managed by the Rust compiler.
 
 ## Caveat 1: Extra constraints on `async` syntax
 
