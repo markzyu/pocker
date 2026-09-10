@@ -141,23 +141,14 @@ fn main() -> std::io::Result<()> {
             // Call runtime.check_pending_reasons to see whether we've hit a timer
             let hit_timer = runtime
                 .check_pending_reasons(|reason| match reason {
-                    Some(TrafficLightYieldReason::Timer(timer)) => true,
+                    Some(TrafficLightYieldReason::Timer(timer)) => traffic_light.elapsed() >= timer,
                     _ => false,
                 })
                 .unwrap();
 
-            if let Some(TrafficLightYieldReason::Timer(timer)) = hit_timer {
-                let now = traffic_light.elapsed();
-                if now >= timer {
-                    runtime
-                        .unblock_futures(TrafficLightYieldReason::Timer(timer), ())
-                        .unwrap();
-                    break;
-                } else {
-                    // Show a countdown next to the light
-                    print!("{}", (timer - now).as_secs());
-                    stdout.flush()?;
-                }
+            if let Some(timer_reason) = hit_timer {
+                runtime.unblock_futures(timer_reason, ()).unwrap();
+                break;
             }
 
             // Otherwise, check user input with a 500ms timeout
