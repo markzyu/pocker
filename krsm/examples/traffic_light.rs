@@ -28,8 +28,9 @@ const GREEN_LIGHT_DURATION: Duration = Duration::from_secs(7);
 const YELLOW_LIGHT_DURATION: Duration = Duration::from_secs(3);
 const RED_LIGHT_DURATION: Duration = Duration::from_secs(5);
 
-// How long to wait before fulfilling a sensor request for light to be green
+/// How long to wait before fulfilling a sensor request for light to be green
 const SENSOR_ACQUIRE_DURATION: Duration = Duration::from_secs(1);
+const SENSOR_RELEASE_DURATION: Duration = Duration::from_secs(1);
 
 type TResult<T> = Result<T, krsm::AsyncRuntimeError>;
 
@@ -52,8 +53,17 @@ impl<'a> TrafficLight<'a> {
         futures_lite::future::or(
             self.runtime
                 .new_pending_future(TrafficLightYieldReason::Timer(timer)),
-            self.runtime
-                .new_pending_future(TrafficLightYieldReason::SensorRelease),
+            async {
+                self.runtime
+                    .new_pending_future(TrafficLightYieldReason::SensorRelease)
+                    .await?;
+
+                let new_timer = SENSOR_RELEASE_DURATION + self.start_time.elapsed();
+                self.runtime
+                    .new_pending_future(TrafficLightYieldReason::Timer(new_timer))
+                    .await?;
+                Ok(())
+            },
         )
         .await?;
 
@@ -167,6 +177,10 @@ fn main() -> std::io::Result<()> {
                         runtime
                             .unblock_futures(TrafficLightYieldReason::SensorRelease, ())
                             .unwrap();
+
+                        // The state machine will still wait for SENSOR_RELEASE_DURATION
+                        // So, we don't clear stdout for now
+                        should_clear_stdout = false;
                         break;
                     }
                 }
