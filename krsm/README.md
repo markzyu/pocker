@@ -4,11 +4,11 @@ This crate is a single-threaded, pinned, no_std async runtime for futures. This 
 
 * Runs all async futures within the current thread
 * Does not risk blocking the current thread permanently
-* Does not include `std` as a dependency. (There are generic type parameters for your allocator, Arc, and Box)
+* Does not include `std` as a dependency.
 * Does not interact with any system call through async I/O
 * Does not rely on the wakers to determine when to wake up the polling thread.
 
-Instead, KRSM lets the downstream define yields and take control of each individual polling step.
+Instead, KRSM lets the downstream define yields, perform non-blocking I/O on behalf of async functions, and take control of each individual polling step.
 
 
 ## Goal
