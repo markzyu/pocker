@@ -28,6 +28,9 @@ const GREEN_LIGHT_DURATION: Duration = Duration::from_secs(7);
 const YELLOW_LIGHT_DURATION: Duration = Duration::from_secs(3);
 const RED_LIGHT_DURATION: Duration = Duration::from_secs(5);
 
+// How long to wait before fulfilling a sensor request for light to be green
+const SENSOR_ACQUIRE_DURATION: Duration = Duration::from_secs(1);
+
 type TResult<T> = Result<T, krsm::AsyncRuntimeError>;
 
 impl<'a> TrafficLight<'a> {
@@ -75,8 +78,17 @@ impl<'a> TrafficLight<'a> {
         futures_lite::future::or(
             self.runtime
                 .new_pending_future(TrafficLightYieldReason::Timer(timer)),
-            self.runtime
-                .new_pending_future(TrafficLightYieldReason::SensorAcquire),
+            async {
+                self.runtime
+                    .new_pending_future(TrafficLightYieldReason::SensorAcquire)
+                    .await?;
+
+                let new_timer = SENSOR_ACQUIRE_DURATION + self.start_time.elapsed();
+                self.runtime
+                    .new_pending_future(TrafficLightYieldReason::Timer(new_timer))
+                    .await?;
+                Ok(())
+            },
         )
         .await?;
 
@@ -114,6 +126,7 @@ fn main() -> std::io::Result<()> {
 
         // Create a subloop to wait for a valid timer or a user input
         // This subloop should not be blocking for more than 1 second at a time.
+        let mut should_clear_stdout = true;
         loop {
             // Call runtime.check_pending_reasons to see whether we've hit a timer
             let hit_timer = runtime
@@ -144,6 +157,10 @@ fn main() -> std::io::Result<()> {
                         runtime
                             .unblock_futures(TrafficLightYieldReason::SensorAcquire, ())
                             .unwrap();
+
+                        // The state machine will still wait for SENSOR_ACQUIRE_DURATION
+                        // So, we don't clear stdout for now
+                        should_clear_stdout = false;
                         break;
                     }
                     if key.code == crossterm::event::KeyCode::Char('n') {
@@ -157,11 +174,13 @@ fn main() -> std::io::Result<()> {
         }
 
         // Reset terminal output so we don't keep creating more lines/outputs
-        crossterm::execute!(
-            stdout,
-            crossterm::cursor::MoveToColumn(0),
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
-        )?;
+        if should_clear_stdout {
+            crossterm::execute!(
+                stdout,
+                crossterm::cursor::MoveToColumn(0),
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+            )?;
+        }
     }
     println!("Unexpected early exit");
     Ok(())
