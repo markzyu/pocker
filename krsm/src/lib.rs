@@ -2,6 +2,8 @@
 #![no_std]
 #![doc = include_str!("../README.md")]
 
+mod common;
 mod futures;
 
-pub use crate::futures::{AsyncRuntime, AsyncRuntimeError, AsyncYielder};
+pub use crate::common::{AsyncRuntimeError, FixedSizedMap};
+pub use crate::futures::{AsyncRuntime, AsyncYielder};

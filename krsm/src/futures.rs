@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR GPL-3.0-or-later
+use crate::common::{AsyncRuntimeError, FixedSizedMap};
 use core::cell::RefCell;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-use thiserror::Error;
 
 /// The KRSM async runtime
 ///
@@ -32,18 +32,7 @@ pub struct AsyncRuntime<
 > {
     has_unblock: RefCell<Option<(YieldReason, YieldResponse)>>,
     has_new_future: AtomicBool,
-    pending_futures: RefCell<[Option<(YieldReason, usize)>; MAX_PENDING]>,
-    pending_futures_size: RefCell<usize>,
-}
-
-/// This error type is for future proofing only. It will always implement Debug.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum AsyncRuntimeError {
-    #[error("Cannot enqueue more pending futures, exceeding MAX_PENDING")]
-    TooManyPending,
-
-    #[error("Unblocking more than one future in a single async step is disallowed")]
-    TooManyUnblocked,
+    pending_futures: FixedSizedMap<YieldReason, usize, MAX_PENDING>,
 }
 
 /// AsyncYield is a helper for KRSM async loops.
@@ -117,26 +106,8 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
 
         // tally relevant counters
         self.has_new_future.store(true, Ordering::Relaxed);
-        {
-            let mut pending_futures = self.pending_futures.borrow_mut();
-            let pending_futures_size = self._pending_futures_size();
-            let search_result =
-                pending_futures.binary_search_by(|x| Some(future_type).cmp(&x.map(|v| v.0)));
-            match search_result {
-                Err(index) => {
-                    if pending_futures_size == MAX_PENDING {
-                        return Err(AsyncRuntimeError::TooManyPending);
-                    }
-                    pending_futures.copy_within(index..pending_futures_size, index + 1);
-                    pending_futures[index] = Some((future_type, 1));
-                    self.pending_futures_size.replace(pending_futures_size + 1);
-                }
-                Ok(index) => {
-                    let count = pending_futures[index].unwrap().1;
-                    pending_futures[index] = Some((future_type, count + 1));
-                }
-            }
-        }
+        self.pending_futures.set_default(future_type, 0)?;
+        self.pending_futures.edit(&future_type, |v| v + 1);
 
         guard.build().await
     }
@@ -161,7 +132,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
     /// measure how large MAX_PENDING should be, in order to create a large enough, but
     /// finite, state machine, for their use cases.
     pub fn _pending_futures_size(&self) -> usize {
-        *self.pending_futures_size.borrow()
+        self.pending_futures.len()
     }
 
     /// This method is not meant to be called from within async.
@@ -207,8 +178,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
         Ok(Self {
             has_unblock: RefCell::new(None),
             has_new_future: AtomicBool::default(),
-            pending_futures: RefCell::new([const { None }; MAX_PENDING]),
-            pending_futures_size: RefCell::new(0),
+            pending_futures: FixedSizedMap::new(),
         })
     }
 
@@ -222,15 +192,10 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
     where
         F: FnMut(Option<YieldReason>) -> bool,
     {
-        let pending_futures = self.pending_futures.borrow();
-        let end_idx = self._pending_futures_size();
-        let Some(Some(reason)) = pending_futures[..end_idx]
-            .iter()
-            .find(|x| func(x.map(|v| v.0)))
-        else {
-            return Ok(None);
-        };
-        Ok(Some(reason.0))
+        let result = self
+            .pending_futures
+            .find(|x| func(x.map(|v| v.0)), |(k, _)| *k);
+        Ok(result)
     }
 }
 
@@ -258,22 +223,15 @@ impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDI
     for FutureDropGuard<'a, YieldReason, YieldResponse, MAX_PENDING>
 {
     fn drop(&mut self) {
-        let mut pending_futures = self.runtime.pending_futures.borrow_mut();
-        let pending_futures_size = self.runtime._pending_futures_size();
-        if let Ok(index) =
-            pending_futures.binary_search_by(|x| Some(self.future_type).cmp(&x.map(|v| v.0)))
-        {
-            let count = pending_futures[index].unwrap().1;
-            if count > 1 {
-                pending_futures[index] = Some((self.future_type, count - 1));
-            } else {
-                pending_futures.copy_within((index + 1)..pending_futures_size, index);
-                pending_futures[pending_futures_size - 1] = None;
-                self.runtime
-                    .pending_futures_size
-                    .replace(pending_futures_size - 1);
-            }
-        };
+        let key = self.future_type;
+        self.runtime
+            .pending_futures
+            .edit(&key, |x| core::cmp::max(0, x - 1));
+
+        let is_empty = self.runtime.pending_futures.read(&key, |x| x == &0);
+        if is_empty == Some(true) {
+            self.runtime.pending_futures.remove(&key);
+        }
     }
 }
 
@@ -331,10 +289,7 @@ mod tests {
 
     fn _assert_one_pending_at(runtime: &PtraceAsyncRuntime, idx: usize, reason: PtraceFutureTypes) {
         assert_eq!(
-            {
-                let pending_futures = runtime.pending_futures.borrow();
-                pending_futures[idx]
-            },
+            runtime.pending_futures.read_idx(idx, |x| *x),
             Some((reason, 1))
         );
     }
