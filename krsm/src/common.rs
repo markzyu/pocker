@@ -12,6 +12,25 @@ pub enum AsyncRuntimeError {
     TooManyUnblocked,
 }
 
+/// This is the "move" equivalent of slice::copy_within
+pub fn _move_within<T>(slice: &mut [T], range_from: usize, range_to: usize, new_start: usize) {
+    assert!(range_to >= range_from);
+    let new_end = new_start + range_to - range_from;
+    if new_start < range_from {
+        let mut j = new_start;
+        for i in range_from..range_to {
+            slice.swap(i, j);
+            j += 1;
+        }
+    } else if new_start > range_from {
+        let mut j = new_end - 1;
+        for i in (range_from..range_to).rev() {
+            slice.swap(i, j);
+            j -= 1;
+        }
+    }
+}
+
 /// A fixed-sized lookup Map, implemented as a sorted array
 #[derive(Debug)]
 pub struct FixedSizedMap<K: Eq + Ord, V, const N: usize> {
@@ -37,20 +56,6 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
             None => Some(key).cmp(&None),
             Some((other_key, _)) => Some(key).cmp(&Some(other_key)),
         })
-    }
-
-    fn _move_within(
-        &self,
-        slice: &mut [Option<(K, V)>],
-        range_from: usize,
-        range_to: usize,
-        new_start: usize,
-    ) {
-        let mut j = new_start;
-        for i in range_from..range_to {
-            slice.swap(i, j);
-            j += 1;
-        }
     }
 
     /// Edits an item if it exists. Otherwise, return false
@@ -102,6 +107,18 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
         Some(result_fn(result))
     }
 
+    /// edit every entry in this map. edit_fn should return true to stop the iteration.
+    pub fn map_edit(&self, mut edit_fn: impl FnMut(&mut (K, V)) -> bool) {
+        let mut items = self.items.borrow_mut();
+        let end_idx = self.len();
+        for i in 0..end_idx {
+            let item = items[i].as_mut().unwrap();
+            if edit_fn(item) {
+                break;
+            }
+        }
+    }
+
     /// Returns None if the key doesn't exist
     pub fn remove(&self, key: &K) -> Option<V> {
         let mut items = self.items.borrow_mut();
@@ -109,7 +126,7 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
         let search_result = self._search(&*items, key);
         if let Ok(index) = search_result {
             let (_, val) = items[index].take().unwrap();
-            self._move_within(&mut *items, index + 1, size, index);
+            _move_within(&mut *items, index + 1, size, index);
             items[size - 1] = None;
             self.size.replace(size - 1);
             Some(val)
@@ -128,12 +145,31 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
                 if size == N {
                     return Err(AsyncRuntimeError::TooManyPending);
                 }
-                self._move_within(&mut *items, index, size, index + 1);
+                _move_within(&mut *items, index, size, index + 1);
                 items[index] = Some((key, val));
                 self.size.replace(size + 1);
                 Ok(true)
             }
             Ok(_) => Ok(false),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::common::_move_within;
+
+    #[test]
+    fn test_shift_to_left() {
+        let mut numbers = [0, 1, 2, 3, 4, 5, 6];
+        _move_within(&mut numbers, 2, 6, 0);
+        assert_eq!(numbers, [2, 3, 4, 5, 0, 1, 6]);
+    }
+
+    #[test]
+    fn test_shift_to_right() {
+        let mut numbers = [0, 1, 2, 3, 4, 5, 6];
+        _move_within(&mut numbers, 1, 5, 2);
+        assert_eq!(numbers, [0, 5, 1, 2, 3, 4, 6]);
     }
 }

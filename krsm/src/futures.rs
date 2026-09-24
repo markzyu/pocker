@@ -226,7 +226,7 @@ impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDI
         let key = self.future_type;
         self.runtime
             .pending_futures
-            .edit(&key, |x| core::cmp::max(0, x - 1));
+            .edit(&key, |x| if x > 0 { x - 1 } else { 0 });
 
         let is_empty = self.runtime.pending_futures.read(&key, |x| x == &0);
         if is_empty == Some(true) {
