@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT OR GPL-3.0-or-later
-use krsm::TaskTracker;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::cmp::Eq;
@@ -52,6 +51,8 @@ enum HttpClientYieldResponse {
 }
 
 type AsyncRuntime = krsm::AsyncRuntime<HttpClientYieldReason, HttpClientYieldResponse>;
+type TaskTracker = krsm::TaskTracker<HttpClientYieldReason, HttpClientYieldResponse>;
+type TaskBatch = krsm::TaskBatch<HttpClientYieldReason, HttpClientYieldResponse>;
 
 /// This is a state machine that only yields when interacting with AI and with user input
 /// Even though it has "async" syntax, it doesn't implement asyncio and instead relies on a worker thread.
@@ -196,16 +197,10 @@ struct OpenJevQuestion<K: Hash + Eq> {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct OpenJevQuestions<K: Hash + Eq> {
-    item: OpenJevQuestion<K>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct OpenJevRequest<K: Hash + Eq> {
     state: String,
     model: String,
-    questions: OpenJevQuestions<K>,
+    questions: HashMap<String, OpenJevQuestion<K>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -216,14 +211,8 @@ struct OpenJevAnswer<K: Hash + Eq> {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct OpenJevAnswers<K: Hash + Eq> {
-    item: OpenJevAnswer<K>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct OpenJevResponse<K: Hash + Eq> {
-    answers: OpenJevAnswers<K>,
+    answers: HashMap<String, OpenJevAnswer<K>>,
 }
 
 // --------------------------
@@ -250,12 +239,10 @@ fn main() -> anyhow::Result<()> {
     // Two falsey states:
     //    - None means the worker thread is currently alive
     //    - Some(0) means the worker thread is done and there are no more tracked tasks
-    let mut maybe_tracker: Option<TaskTracker<HttpClientYieldReason, HttpClientYieldResponse>> =
-        Some(TaskTracker::new());
+    let mut maybe_tracker: Option<TaskTracker> = Some(TaskTracker::new());
 
     #[allow(unused_assignments)]
-    let (mut sender, mut receiver) =
-        channel::<TaskTracker<HttpClientYieldReason, HttpClientYieldResponse>>();
+    let (mut sender, mut receiver) = channel::<TaskTracker>();
 
     loop {
         let result = unsafe { runtime.run_async_step(&mut future)? };
@@ -293,12 +280,21 @@ fn main() -> anyhow::Result<()> {
         let keyphrase = { builder.keyphrase.borrow().clone() };
         let matches = { builder.curr_matches.borrow().clone() };
         let read_file = { builder.fuzzy_search_path.borrow().clone() };
-        (sender, receiver) =
-            channel::<TaskTracker<HttpClientYieldReason, HttpClientYieldResponse>>();
+        let words_set: HashSet<_> = paragraph.split(" ").collect();
+        let words_list: Vec<_> = words_set.iter().take(50).map(ToString::to_string).collect();
+
+        (sender, receiver) = channel::<TaskTracker>();
         std::thread::spawn(move || {
-            if let Err(e) = tracker
-                .work(|reason| worker_fn(reason, &paragraph, &keyphrase, &matches, &read_file))
-            {
+            let work_result = tracker.work_in_batches(4, |batch| {
+                // Handle std fs calls first
+                std_fs_worker_fn(batch, &read_file)?;
+
+                // Batch all http requests into a single API call
+                let response =
+                    http_request_batcher(batch, &paragraph, &keyphrase, &matches, &words_list)?;
+                http_response_unbatcher(batch, response.as_ref(), &words_list)
+            });
+            if let Err(e) = work_result {
                 println!("Worker thread failed due to {:?}", e);
                 std::process::exit(2);
             }
@@ -311,59 +307,55 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn worker_fn(
-    reason: HttpClientYieldReason,
+fn http_request_batcher(
+    batch: &mut TaskBatch,
     paragraph: &String,
     keyphrase: &String,
     matches: &Vec<String>,
-    read_path: &PathBuf,
-) -> anyhow::Result<HttpClientYieldResponse> {
+    words_list: &Vec<String>,
+) -> anyhow::Result<Option<minreq::Response>> {
     let url = std::env::var("OPENJEV_URL")?;
     let key = std::env::var("OPENJEV_KEY")?;
     let key_header = format!("Bearer {}", key);
-
     let model = "openjev-latest";
 
-    let words_set: HashSet<_> = paragraph.split(" ").collect();
-    let words_list: Vec<_> = words_set.iter().take(50).collect();
-
-    // Send request
     let request = minreq::post(&url).with_header("Authorization", &key_header);
-    let response = match reason {
-        HttpClientYieldReason::FuzzyMatchesParagraph(_) => {
-            let body: OpenJevRequest<char> =  OpenJevRequest {
-                state: paragraph.clone(),
-                model: model.to_string(),
-                questions: OpenJevQuestions {
-                    item: OpenJevQuestion {
+    let mut questions: HashMap<String, OpenJevQuestion<String>> = HashMap::new();
+    for item in batch {
+        let Some((reason, _)) = item else {
+            continue;
+        };
+        match reason {
+            HttpClientYieldReason::FuzzyMatchesParagraph(_) => {
+                let y = "y".to_string();
+                let n = "n".to_string();
+                questions.insert(
+                    "FuzzyMatchesParagraph".to_string(),
+                    OpenJevQuestion {
                         r#type: "choice".to_string(),
                         instructions: format!(
                             "Does this text semantically mention the string: {:?}", keyphrase
                         ),
                         criteria: HashMap::from([
-                            ('y', "Semantically, allowing typos and other spellings, yes, this is a match".to_string()),
-                            ('n', "Semantically, allowing typos and other spellings, no, this is not a match".to_string())
+                            (y, "Semantically, allowing typos and other spellings, yes, this is a match".to_string()),
+                            (n, "Semantically, allowing typos and other spellings, no, this is not a match".to_string())
                         ]),
                     }
-                }
-            };
-            Some(request.with_json(&body)?.send()?)
-        }
-        HttpClientYieldReason::GenerateMatch(_) => {
-            let criteria: HashMap<_, _> = words_list
-                .iter()
-                .enumerate()
-                .map(|(idx, str)| {
-                    let criterion =
-                        format!("{:?} would match meanings related to {:?}", str, keyphrase);
-                    return (idx, criterion);
-                })
-                .collect();
-            let body: OpenJevRequest<usize> = OpenJevRequest {
-                state: paragraph.clone(),
-                model: model.to_string(),
-                questions: OpenJevQuestions {
-                    item: OpenJevQuestion {
+                );
+            }
+            HttpClientYieldReason::GenerateMatch(_) => {
+                let criteria: HashMap<_, _> = words_list
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, str)| {
+                        let criterion =
+                            format!("{:?} would match meanings related to {:?}", str, keyphrase);
+                        return (idx.to_string(), criterion);
+                    })
+                    .collect();
+                questions.insert(
+                    "GenerateMatch".to_string(),
+                    OpenJevQuestion {
                         r#type: "choice".to_string(),
                         instructions: format!(
                             "Find a word from the above text that matches the following phrase: {:?}",
@@ -371,16 +363,14 @@ fn worker_fn(
                         ),
                         criteria,
                     },
-                },
-            };
-            Some(request.with_json(&body)?.send()?)
-        }
-        HttpClientYieldReason::GenerateMatchFinalCheck(_) => {
-            let body: OpenJevRequest<char> = OpenJevRequest {
-                state: paragraph.clone(),
-                model: model.to_string(),
-                questions: OpenJevQuestions {
-                    item: OpenJevQuestion {
+                );
+            }
+            HttpClientYieldReason::GenerateMatchFinalCheck(_) => {
+                let y = "y".to_string();
+                let n = "n".to_string();
+                questions.insert(
+                    "GenerateMatchFinalCheck".to_string(),
+                    OpenJevQuestion {
                         r#type: "choice".to_string(),
                         instructions: format!(
                             "We want to find all words matching the phrase {:?}. Please \
@@ -388,9 +378,9 @@ fn worker_fn(
                             keyphrase, matches
                         ),
                         criteria: HashMap::from([
-                            ('y', format!("Yes, this is a complete match: {:?}", matches)),
+                            (y, format!("Yes, this is a complete match: {:?}", matches)),
                             (
-                                'n',
+                                n,
                                 format!(
                                     "No, this is not complete. There are more matches than {:?}",
                                     matches
@@ -398,34 +388,30 @@ fn worker_fn(
                             ),
                         ]),
                     },
-                },
-            };
-            Some(request.with_json(&body)?.send()?)
-        }
-        HttpClientYieldReason::GenerateSkipKeyword(_) => {
-            let mut criteria: HashMap<_, _> = words_list
-                .iter()
-                .enumerate()
-                .map(|(idx, str)| {
-                    let criterion = format!(
-                        "{:?} would likely show up never be related to {:?}",
-                        str, keyphrase
-                    );
-                    return (idx, criterion);
-                })
-                .collect();
-            criteria.insert(
-                words_list.len(),
-                format!(
-                    "Such word does not exist. Many of these words are somewhat related: {:?}",
-                    &words_list
-                ),
-            );
-            let body: OpenJevRequest<usize> = OpenJevRequest {
-                state: paragraph.clone(),
-                model: model.to_string(),
-                questions: OpenJevQuestions {
-                    item: OpenJevQuestion {
+                );
+            }
+            HttpClientYieldReason::GenerateSkipKeyword(_) => {
+                let mut criteria: HashMap<_, _> = words_list
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, str)| {
+                        let criterion = format!(
+                            "{:?} would likely show up never be related to {:?}",
+                            str, keyphrase
+                        );
+                        return (idx.to_string(), criterion);
+                    })
+                    .collect();
+                criteria.insert(
+                    words_list.len().to_string(),
+                    format!(
+                        "Such word does not exist. Many of these words are somewhat related: {:?}",
+                        &words_list
+                    ),
+                );
+                questions.insert(
+                    "GenerateSkipKeyword".to_string(),
+                    OpenJevQuestion {
                         r#type: "choice".to_string(),
                         instructions: format!(
                             "Find a word from the above text that is unlikely to match paragraphs related to: {:?}",
@@ -433,42 +419,73 @@ fn worker_fn(
                         ),
                         criteria,
                     },
-                },
-            };
-            Some(request.with_json(&body)?.send()?)
-        }
-        _ => None,
+                );
+            }
+            _ => (),
+        };
+    }
+
+    if questions.len() == 0 {
+        return Ok(None);
+    }
+    let body: OpenJevRequest<String> = OpenJevRequest {
+        state: paragraph.clone(),
+        model: model.to_string(),
+        questions,
+    };
+    Ok(Some(request.with_json(&body)?.send()?))
+}
+
+fn http_response_unbatcher(
+    batch: &mut TaskBatch,
+    response: Option<&minreq::Response>,
+    words_list: &Vec<String>,
+) -> anyhow::Result<()> {
+    let Some(response) = response else {
+        return Ok(());
     };
 
+    let json: OpenJevResponse<String> = response.json()?;
+    for item in batch {
+        let Some((reason, result)) = item else {
+            continue;
+        };
+        match reason {
+            HttpClientYieldReason::FuzzyMatchesParagraph(_) => {
+                result.replace(HttpClientYieldResponse::FuzzyMatchesParagraph(
+                    &json.answers["FuzzyMatchesParagraph"].choice == "y",
+                ));
+            }
+            HttpClientYieldReason::GenerateMatchFinalCheck(_) => {
+                result.replace(HttpClientYieldResponse::GenerateMatchFinalCheck(
+                    &json.answers["GenerateMatchFinalCheck"].choice == "y",
+                ));
+            }
+            HttpClientYieldReason::GenerateMatch(_) => {
+                let idx: usize = json.answers["GenerateMatch"].choice.parse().unwrap();
+                result.replace(HttpClientYieldResponse::GenerateMatch(Some(
+                    words_list[idx].to_string(),
+                )));
+            }
+            HttpClientYieldReason::GenerateSkipKeyword(_) => {
+                let idx: usize = json.answers["GenerateSkipKeyword"].choice.parse().unwrap();
+                result.replace(HttpClientYieldResponse::GenerateSkipKeyword(
+                    words_list.get(idx).map(ToString::to_string),
+                ));
+            }
+            _ => (),
+        }
+    }
+    Ok(())
+}
+
+fn std_fs_worker_fn(batch: &mut TaskBatch, read_path: &PathBuf) -> anyhow::Result<()> {
     // Handle response
-    match reason {
-        HttpClientYieldReason::FuzzyMatchesParagraph(_) => {
-            let json: OpenJevResponse<char> = response.unwrap().json()?;
-            Ok(HttpClientYieldResponse::FuzzyMatchesParagraph(
-                json.answers.item.choice == 'y',
-            ))
-        }
-        HttpClientYieldReason::GenerateMatchFinalCheck(_) => {
-            let json: OpenJevResponse<char> = response.unwrap().json()?;
-            Ok(HttpClientYieldResponse::GenerateMatchFinalCheck(
-                json.answers.item.choice == 'y',
-            ))
-        }
-        HttpClientYieldReason::GenerateMatch(_) => {
-            let json: OpenJevResponse<String> = response.unwrap().json()?;
-            let idx: usize = json.answers.item.choice.parse().unwrap();
-            Ok(HttpClientYieldResponse::GenerateMatch(Some(
-                words_list[idx].to_string(),
-            )))
-        }
-        HttpClientYieldReason::GenerateSkipKeyword(_) => {
-            let json: OpenJevResponse<String> = response.unwrap().json()?;
-            let idx: usize = json.answers.item.choice.parse().unwrap();
-            Ok(HttpClientYieldResponse::GenerateSkipKeyword(
-                words_list.get(idx).map(ToString::to_string),
-            ))
-        }
-        HttpClientYieldReason::ReadFileIntoParagraphs(_) => {
+    for item in batch {
+        let Some((reason, result)) = item else {
+            continue;
+        };
+        if let HttpClientYieldReason::ReadFileIntoParagraphs(_) = reason {
             let file = std::fs::File::open(read_path).unwrap();
             let reader = BufReader::new(file);
             let mut paragraphs: Vec<String> = Vec::new();
@@ -486,7 +503,8 @@ fn worker_fn(
                     paragraph.push_str(&line.trim());
                 }
             }
-            Ok(HttpClientYieldResponse::ReadFileIntoParagraphs(paragraphs))
+            result.replace(HttpClientYieldResponse::ReadFileIntoParagraphs(paragraphs));
         }
     }
+    Ok(())
 }

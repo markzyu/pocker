@@ -153,6 +153,22 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
         }
     }
 
+    /// edit every entry in this map, in batches.
+    pub fn map_edit_batches(
+        &self,
+        batch_size: usize,
+        mut edit_fn: impl FnMut(&mut [Option<(K, V)>]) -> bool,
+    ) {
+        let end_idx = self.len();
+        let mut items = self.items.borrow_mut();
+        let slice = &mut items[0..end_idx];
+        for chunk in slice.chunks_mut(batch_size) {
+            if edit_fn(chunk) {
+                break;
+            }
+        }
+    }
+
     /// Returns None if the key doesn't exist
     pub fn remove(&self, key: &K) -> Option<V> {
         let mut items = self.items.borrow_mut();
@@ -234,6 +250,33 @@ mod tests {
         assert_eq!(map.read_idx(0, |x| *x), Some((-105, 302)));
         assert_eq!(map.read_idx(1, |x| *x), Some((-99, 101)));
         assert_eq!(map.read_idx(2, |x| *x), None);
+    }
+
+    #[test]
+    fn test_fixed_sized_map_edit_batches() {
+        let map: FixedSizedMap<isize, usize, 5> = FixedSizedMap::new();
+        assert!(map.set_default(5, 7).unwrap());
+        assert!(map.set_default(4, 8).unwrap());
+        assert!(map.set_default(-3, 9).unwrap());
+
+        map.map_edit_batches(2, |batch| {
+            for item in batch {
+                let Some((k, v)) = item else {
+                    continue;
+                };
+                if *k > 0 {
+                    continue;
+                }
+                *k *= 2;
+                *v *= 3;
+            }
+            false
+        });
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.read_idx(0, |x| *x), Some((-6, 27)));
+        assert_eq!(map.read_idx(1, |x| *x), Some((4, 8)));
+        assert_eq!(map.read_idx(2, |x| *x), Some((5, 7)));
+        assert_eq!(map.read_idx(3, |x| *x), None);
     }
 
     #[test]
