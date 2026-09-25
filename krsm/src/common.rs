@@ -247,4 +247,27 @@ mod tests {
             [Some((-5, 300)), Some((1, 100)), Some((2, 200)), None, None,]
         );
     }
+
+    #[test]
+    fn test_fixed_sized_map_inner_join_keys() {
+        let map1: FixedSizedMap<isize, usize, 5> = FixedSizedMap::new();
+        assert!(map1.set_default(1, 100).unwrap());
+        assert!(map1.set_default(20, 200).unwrap());
+        assert!(map1.set_default(21, 300).unwrap());
+        assert!(map1.set_default(5, 400).unwrap());
+        assert_eq!(map1.len(), 4);
+
+        let map2: FixedSizedMap<isize, usize, 5> = FixedSizedMap::new();
+        assert!(map2.set_default(1, 500).unwrap());
+        assert!(map2.set_default(20, 600).unwrap());
+        assert!(map2.set_default(6, 700).unwrap());
+        assert_eq!(map2.len(), 3);
+
+        map1.inner_join_keys(&map2);
+        assert_eq!(map1.len(), 2);
+        assert_eq!(
+            *map1.items.borrow(),
+            [Some((1, 100)), Some((20, 200)), None, None, None,]
+        );
+    }
 }
