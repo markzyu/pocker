@@ -51,10 +51,16 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
     }
 
     /// Perform search in such a way that None shows up at the end of the sorted array
+    ///
+    /// The array sorting order is:
+    /// 1. `None` shows up at the end.
+    /// 2. `Some(val)` shows up in ascending order of val
     fn _search(&self, slice: &[Option<(K, V)>], key: &K) -> Result<usize, usize> {
-        slice.binary_search_by(|x| match x.as_ref() {
-            None => Some(key).cmp(&None),
-            Some((other_key, _)) => Some(key).cmp(&Some(other_key)),
+        slice.binary_search_by(|x| {
+            let Some(x) = x else {
+                return core::cmp::Ordering::Greater;
+            };
+            x.0.cmp(key)
         })
     }
 
@@ -185,19 +191,60 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::_move_within;
+    use crate::{FixedSizedMap, common::_move_within};
 
     #[test]
-    fn test_shift_to_left() {
+    fn test_move_within_shift_to_left() {
         let mut numbers = [0, 1, 2, 3, 4, 5, 6];
         _move_within(&mut numbers, 2, 6, 0);
         assert_eq!(numbers, [2, 3, 4, 5, 0, 1, 6]);
     }
 
     #[test]
-    fn test_shift_to_right() {
+    fn test_move_within_shift_to_right() {
         let mut numbers = [0, 1, 2, 3, 4, 5, 6];
         _move_within(&mut numbers, 1, 5, 2);
         assert_eq!(numbers, [0, 5, 1, 2, 3, 4, 6]);
+    }
+
+    #[test]
+    fn test_fixed_sized_map() {
+        let map: FixedSizedMap<isize, usize, 5> = FixedSizedMap::new();
+        assert!(map.set_default(1, 100).unwrap());
+        assert!(map.set_default(2, 200).unwrap());
+        assert!(map.set_default(-5, 300).unwrap());
+        assert!(!map.set_default(1, 400).unwrap());
+        assert_eq!(map.len(), 3);
+
+        assert!(map.edit(&-5, |x| x + 1));
+        assert_eq!(map.remove(&2), Some(200));
+        assert_eq!(map.len(), 2);
+
+        assert_eq!(map.read(&100, |x| *x), None);
+        assert_eq!(map.read(&1, |x| *x), Some(100));
+        assert_eq!(map.read(&2, |x| *x), None);
+        assert_eq!(map.read(&-5, |x| *x), Some(301));
+
+        map.map_edit(|(k, v)| {
+            *k -= 100;
+            *v += 1;
+            false
+        });
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.read_idx(0, |x| *x), Some((-105, 302)));
+        assert_eq!(map.read_idx(1, |x| *x), Some((-99, 101)));
+        assert_eq!(map.read_idx(2, |x| *x), None);
+    }
+
+    #[test]
+    fn test_fixed_sized_map_array_sorting_order() {
+        let map: FixedSizedMap<isize, usize, 5> = FixedSizedMap::new();
+        map.set_default(1, 100).unwrap();
+        map.set_default(2, 200).unwrap();
+        map.set_default(-5, 300).unwrap();
+        assert_eq!(
+            *map.items.borrow(),
+            [Some((-5, 300)), Some((1, 100)), Some((2, 200)), None, None,]
+        );
     }
 }

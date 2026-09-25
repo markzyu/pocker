@@ -478,8 +478,8 @@ mod tests {
         ));
         assert!(runtime._has_new_blockage());
         assert_eq!(runtime._pending_futures_size(), 2);
-        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
-        _assert_one_pending_at(&runtime, 1, PtraceFutureTypes::WaitForPtraceSyscall);
+        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
+        _assert_one_pending_at(&runtime, 1, PtraceFutureTypes::WaitForSignal);
 
         // Unblock the first future
         let event = PtraceStatus {};
@@ -516,8 +516,8 @@ mod tests {
         ));
         assert!(runtime._has_new_blockage());
         assert_eq!(runtime._pending_futures_size(), 2);
-        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
-        _assert_one_pending_at(&runtime, 1, PtraceFutureTypes::WaitForPtraceSyscall);
+        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
+        _assert_one_pending_at(&runtime, 1, PtraceFutureTypes::WaitForSignal);
 
         // Unblock the second future
         let event = PtraceStatus {};
