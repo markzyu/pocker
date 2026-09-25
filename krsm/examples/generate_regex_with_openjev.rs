@@ -3,7 +3,7 @@ use krsm::TaskTracker;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::cmp::Eq;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -15,7 +15,9 @@ use std::sync::mpsc::channel;
 #[allow(dead_code)]
 enum RegexBuilderYieldReason {
     FuzzyMatchesParagraph(usize),
-    GenerateMatchByPrefix(usize),
+    /// Ask OpenJEV to pick a word from the paragraph text (by index)
+    GenerateMatch(usize),
+    /// Ask OpenJEV to check the list of matches is complete
     GenerateMatchFinalCheck(usize),
     GenerateRegex(usize),
     UserInputAddMatch,
@@ -52,7 +54,7 @@ enum RegexResponse {
 #[allow(dead_code)]
 enum RegexBuilderYieldResponse {
     FuzzyMatchesParagraph(bool),
-    GenerateMatchByPrefix(Option<char>),
+    GenerateMatch(Option<String>),
     GenerateMatchFinalCheck(bool),
     GenerateRegex(RegexResponse),
     // (example paragraph, matched text)
@@ -76,7 +78,6 @@ struct RegexBuilder<'a> {
 
     curr_paragraph: RefCell<String>,
     curr_matches: RefCell<Vec<String>>,
-    curr_match: RefCell<String>,
     curr_regex: RefCell<String>,
 
     // Search path is currently both the parent search glob and the single file being searched
@@ -103,7 +104,6 @@ impl<'a> RegexBuilder<'a> {
 
             curr_paragraph: RefCell::new(String::new()),
             curr_matches: RefCell::new(Vec::new()),
-            curr_match: RefCell::new(String::new()),
             curr_regex: RefCell::new(String::new()),
 
             fuzzy_search_path: RefCell::new(path),
@@ -123,38 +123,26 @@ impl<'a> RegexBuilder<'a> {
     /// The input paragraph must contain a fuzzy match
     async fn _generate_fuzzy_match(&self) -> TResult<Vec<String>> {
         loop {
-            println!("Continuing");
-            let is_complete = futures_lite::future::or(
-                async {
-                    let future = RegexBuilderYieldReason::GenerateMatchFinalCheck(self._ticket());
-                    let response = self.runtime.new_pending_future(future).await?;
-                    Ok(RegexBuilderYieldResponse::GenerateMatchFinalCheck(true) == response)
-                },
-                async {
-                    let future = RegexBuilderYieldReason::GenerateMatchByPrefix(self._ticket());
-                    let response = self.runtime.new_pending_future(future).await?;
-                    let RegexBuilderYieldResponse::GenerateMatchByPrefix(c) = response else {
-                        panic!("Invalid response for GenerateMatchByPrefix");
-                    };
-                    if let Some(c) = c {
-                        let mut result = self.curr_match.borrow_mut();
-                        result.push(c);
-                    } else {
-                        let mut result_list = self.curr_matches.borrow_mut();
-                        let mut result = self.curr_match.borrow_mut();
-                        result_list.push(result.clone());
-                        result.clear();
-                    }
-                    Ok(false)
-                },
-            )
-            .await?;
+            let future = RegexBuilderYieldReason::GenerateMatchFinalCheck(self._ticket());
+            let response = self.runtime.new_pending_future(future).await?;
 
-            if is_complete {
+            if RegexBuilderYieldResponse::GenerateMatchFinalCheck(true) == response {
                 let mut result_list = self.curr_matches.borrow_mut();
-                let list = result_list.clone();
-                result_list.clear();
-                return Ok(list);
+                if result_list.len() > 0 {
+                    let list = result_list.clone();
+                    result_list.clear();
+                    return Ok(list);
+                }
+            }
+
+            let future = RegexBuilderYieldReason::GenerateMatch(self._ticket());
+            let response = self.runtime.new_pending_future(future).await?;
+            let RegexBuilderYieldResponse::GenerateMatch(str) = response else {
+                panic!("Invalid response for GenerateMatch");
+            };
+            if let Some(str) = &str {
+                let mut result_list = self.curr_matches.borrow_mut();
+                result_list.push(str.to_string());
             }
         }
     }
@@ -181,6 +169,7 @@ impl<'a> RegexBuilder<'a> {
 
         let mut has_match = false;
         for paragraph in paragraphs {
+            println!("Paragraph: {}", &paragraph);
             self.curr_paragraph.replace(paragraph.clone());
             let future = RegexBuilderYieldReason::FuzzyMatchesParagraph(self._ticket());
             let response = self.runtime.new_pending_future(future).await?;
@@ -188,13 +177,12 @@ impl<'a> RegexBuilder<'a> {
                 let matches = self._generate_fuzzy_match().await?;
                 has_match = true;
 
-                println!("Paragraph: {}", &paragraph);
                 println!("Matches: {:?}", &matches);
-                println!("");
 
                 let mut examples = self.known_examples.borrow_mut();
                 examples.insert(paragraph.clone(), matches);
             }
+            println!("");
         }
         Ok(has_match)
     }
@@ -296,7 +284,6 @@ fn main() -> anyhow::Result<()> {
             }
         })?;
         if let Some(reason) = completed_reason {
-            println!("Unblocking {:?}", reason);
             let response = tracker.remove_completed(&reason).unwrap();
             runtime.unblock_futures(reason, response)?;
             maybe_tracker.replace(tracker);
@@ -320,7 +307,7 @@ fn main() -> anyhow::Result<()> {
         for reason in lowpri_reasons {
             match reason {
                 RegexBuilderYieldReason::FuzzyMatchesParagraph(_) => tracker.register(reason)?,
-                RegexBuilderYieldReason::GenerateMatchByPrefix(_) => tracker.register(reason)?,
+                RegexBuilderYieldReason::GenerateMatch(_) => tracker.register(reason)?,
                 RegexBuilderYieldReason::GenerateMatchFinalCheck(_) => tracker.register(reason)?,
                 _ => {}
             }
@@ -333,14 +320,12 @@ fn main() -> anyhow::Result<()> {
 
         let paragraph = { builder.curr_paragraph.borrow().clone() };
         let keyphrase = { builder.keyphrase.borrow().clone() };
-        let curr_match = { builder.curr_match.borrow().clone() };
         let matches = { builder.curr_matches.borrow().clone() };
         (sender, receiver) =
             channel::<TaskTracker<RegexBuilderYieldReason, RegexBuilderYieldResponse>>();
         std::thread::spawn(move || {
-            println!("DEBUG len={}", tracker.len());
-            if let Err(e) = tracker
-                .work(|reason| worker_fn(reason, &paragraph, &keyphrase, &curr_match, &matches))
+            if let Err(e) =
+                tracker.work(|reason| worker_fn(reason, &paragraph, &keyphrase, &matches))
             {
                 panic!("Worker thread failed due to {:?}", e);
             }
@@ -352,13 +337,10 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-const MATCH_LETTERS: &'static str = "abcdefghijlkmnopqrstuvwxyz";
-
 fn worker_fn(
     reason: RegexBuilderYieldReason,
     paragraph: &String,
     keyphrase: &String,
-    curr_match: &String,
     matches: &Vec<String>,
 ) -> anyhow::Result<RegexBuilderYieldResponse> {
     let url = std::env::var("OPENJEV_URL")?;
@@ -366,7 +348,9 @@ fn worker_fn(
     let key_header = format!("Bearer {}", key);
 
     let model = "openjev-latest";
-    println!("DEBUG: {:?}", reason);
+
+    let words_set: HashSet<_> = paragraph.split(" ").collect();
+    let words_list: Vec<_> = words_set.iter().take(50).collect();
 
     let request = minreq::post(&url).with_header("Authorization", &key_header);
     let response = match reason {
@@ -389,29 +373,25 @@ fn worker_fn(
             };
             request.with_json(&body)?.send()?
         }
-        RegexBuilderYieldReason::GenerateMatchByPrefix(_) => {
-            let criteria: HashMap<_, _> = MATCH_LETTERS
-                .chars()
-                .map(|chr| {
-                    return (
-                        chr,
-                        format!(
-                            "{}{}* would match meanings related to {:?}",
-                            curr_match, chr, keyphrase
-                        ),
-                    );
+        RegexBuilderYieldReason::GenerateMatch(_) => {
+            let criteria: HashMap<_, _> = words_list
+                .iter()
+                .enumerate()
+                .map(|(idx, str)| {
+                    let criterion =
+                        format!("{:?} would match meanings related to {:?}", str, keyphrase);
+                    return (idx, criterion);
                 })
                 .collect();
-            let body: OpenJevRequest<char> = OpenJevRequest {
+            let body: OpenJevRequest<usize> = OpenJevRequest {
                 state: paragraph.clone(),
                 model: model.to_string(),
                 questions: OpenJevQuestions {
                     item: OpenJevQuestion {
                         r#type: "choice".to_string(),
                         instructions: format!(
-                            "We are trying to create a wildcard query matching: {:?}. But it should not match \
-                            the following phrases: {:?}. Please come up with a **new** wildcard:",
-                            keyphrase, matches
+                            "Find a word from the above text that matches the following phrase: {:?}",
+                            keyphrase
                         ),
                         criteria,
                     },
@@ -427,21 +407,19 @@ fn worker_fn(
                     item: OpenJevQuestion {
                         r#type: "choice".to_string(),
                         instructions: format!(
-                            "Please confirm the word {:?} shows up in the above text. And please \
-                            confirm that it matches the following meaning: {:?}.",
-                            curr_match, keyphrase
+                            "We want to find all words matching the phrase {:?}. Please \
+                            confirm that the following list is a complete of matches from the text: {:?}",
+                            keyphrase, matches
                         ),
                         criteria: HashMap::from([
+                            ('y', format!("Yes, this is a complete match: {:?}", matches)),
                             (
-                                'y',
+                                'n',
                                 format!(
-                                    "Yes, {:?} shows up, is an English word, and is a match",
-                                    curr_match
+                                    "No, this is not complete. There are more matches than {:?}",
+                                    matches
                                 ),
                             ),
-                            ('m', format!("No, {:?} does not show up", curr_match)),
-                            ('n', format!("No, {:?} is not a match", curr_match)),
-                            ('o', format!("No, {:?} is not a word", curr_match)),
                         ]),
                     },
                 },
@@ -450,20 +428,25 @@ fn worker_fn(
         }
         other => panic!("Unexpected task for worker thread: {:?}", other),
     };
-    let json: OpenJevResponse<char> = response.json()?;
-    println!("DEBUG: {} --> {:?}", &paragraph, &json);
     match reason {
-        RegexBuilderYieldReason::FuzzyMatchesParagraph(_) => Ok(
-            RegexBuilderYieldResponse::FuzzyMatchesParagraph(json.answers.item.choice == 'y'),
-        ),
-        RegexBuilderYieldReason::GenerateMatchFinalCheck(_) => {
-            Ok(RegexBuilderYieldResponse::GenerateMatchFinalCheck(
-                curr_match.trim().len() > 0 && json.answers.item.choice == 'y',
+        RegexBuilderYieldReason::FuzzyMatchesParagraph(_) => {
+            let json: OpenJevResponse<char> = response.json()?;
+            Ok(RegexBuilderYieldResponse::FuzzyMatchesParagraph(
+                json.answers.item.choice == 'y',
             ))
         }
-        RegexBuilderYieldReason::GenerateMatchByPrefix(_) => {
-            let chr = json.answers.item.choice;
-            Ok(RegexBuilderYieldResponse::GenerateMatchByPrefix(Some(chr)))
+        RegexBuilderYieldReason::GenerateMatchFinalCheck(_) => {
+            let json: OpenJevResponse<char> = response.json()?;
+            Ok(RegexBuilderYieldResponse::GenerateMatchFinalCheck(
+                json.answers.item.choice == 'y',
+            ))
+        }
+        RegexBuilderYieldReason::GenerateMatch(_) => {
+            let json: OpenJevResponse<String> = response.json()?;
+            let idx: usize = json.answers.item.choice.parse().unwrap();
+            Ok(RegexBuilderYieldResponse::GenerateMatch(Some(
+                words_list[idx].to_string(),
+            )))
         }
         other => panic!("Unexpected task for worker thread: {:?}", other),
     }
