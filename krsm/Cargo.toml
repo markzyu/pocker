@@ -1,6 +1,6 @@
 [package]
 name = "krsm"
-version = "0.3.2"
+version = "0.3.3"
 authors = ["Zhongzhi Yu <7296488+markzyu@users.noreply.github.com>"]
 description = "This crate is a simple, single threaded, pinned async runtime for futures"
 license = "MIT or GPL-3.0-or-later"
@@ -15,4 +15,11 @@ futures-lite = { version = "2.6.1", default-features = false }
 thiserror = { version = "2.0.20", default-features = false }
 
 [dev-dependencies]
+anyhow = "1.0"
 crossterm = "0.29.0"
+serde_json = "1.0"
+minreq = { version = "3.0.0", features = ["json-using-serde"] }
+
+[dev-dependencies.serde]
+version = "1.0.118"
+features = ["derive"]
