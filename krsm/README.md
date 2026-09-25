@@ -1,14 +1,35 @@
 # KRSM: KRSM Rust State Machine
 
-This crate is a single-threaded, pinned, no_std async runtime for futures. This runtime:
+This crate is a single-threaded, pinned, no_std async runner for futures. It's barely an async runtime, because it:
 
-* Runs all async futures within the current thread
-* Does not risk blocking the current thread permanently
-* Does not include `std` as a dependency.
-* Does not interact with any system call through async I/O
+* Requires you to pin the `Future`, and to manually poll it until completion.
+* Does not interact with any system call through async I/O  
 * Does not rely on the wakers to determine when to wake up the polling thread.
 
-Instead, KRSM lets the downstream define yields, perform non-blocking I/O on behalf of async functions, and take control of each individual polling step.
+Instead of providing an executor and a reactor, KRSM lets you (the downstream) define yields, perform non-blocking I/O on behalf of async functions, and take control of each individual polling step.
+
+
+```rust
+// async side: wait for various yields, tagged by reason
+let status = futures_lite::future::or(
+  runtime.new_pending_future(WaitForIOResponse),
+  runtime.new_pending_future(WaitForUserInput),
+).await?;
+
+// sync side: you own the loop
+let future = your_async_fn();
+loop {
+    if let Some(done) = unsafe { runtime.run_async_step(&mut future) }? {
+        break done;
+    }
+    if let Some(event) = check_user_input_non_blocking() {      // your I/O, outside async
+        runtime.unblock_futures(WaitForUserInput, event)?;      // resume exactly one of the many concurrent futures
+        continue;
+    }
+}
+```
+
+And unlike a generator, or a sans-io request/response channel, KRSM keeps several yields alive at the same time. Each one is tagged with a `YieldReason`, and the caller chooses exactly one to resume per polling step — which means KRSM allows the direct usage of `futures_lite::future::or`.
 
 
 ## Goal
