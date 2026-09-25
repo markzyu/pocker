@@ -123,6 +123,7 @@ impl<'a> RegexBuilder<'a> {
     /// The input paragraph must contain a fuzzy match
     async fn _generate_fuzzy_match(&self) -> TResult<Vec<String>> {
         loop {
+            println!("Continuing");
             let is_complete = futures_lite::future::or(
                 async {
                     let future = RegexBuilderYieldReason::GenerateMatchFinalCheck(self._ticket());
@@ -278,7 +279,7 @@ fn main() -> anyhow::Result<()> {
 
         // TODO: If there are pending user interactions, those reason must be handled first
 
-        // First, wait for worker thread, and drain the completed tasks
+        // First, wait for worker thread, and drain the completed & dropped tasks
         let Some(tracker) = maybe_tracker.take() else {
             if let Ok(tracker2) = receiver.try_recv() {
                 maybe_tracker.replace(tracker2);
@@ -286,6 +287,7 @@ fn main() -> anyhow::Result<()> {
             continue;
         };
 
+        tracker.sync(&runtime);
         let completed_reason = runtime.check_pending_reasons(|x| {
             if let Some(x) = x {
                 tracker.is_task_complete(&x)
@@ -294,6 +296,7 @@ fn main() -> anyhow::Result<()> {
             }
         })?;
         if let Some(reason) = completed_reason {
+            println!("Unblocking {:?}", reason);
             let response = tracker.remove_completed(&reason).unwrap();
             runtime.unblock_futures(reason, response)?;
             maybe_tracker.replace(tracker);
@@ -426,7 +429,7 @@ fn worker_fn(
                         instructions: format!(
                             "Please confirm the word {:?} shows up in the above text. And please \
                             confirm that it matches the following meaning: {:?}.",
-                            matches, keyphrase
+                            curr_match, keyphrase
                         ),
                         criteria: HashMap::from([
                             (
@@ -460,13 +463,7 @@ fn worker_fn(
         }
         RegexBuilderYieldReason::GenerateMatchByPrefix(_) => {
             let chr = json.answers.item.choice;
-            Ok(RegexBuilderYieldResponse::GenerateMatchByPrefix(
-                if paragraph.contains(chr) || paragraph.contains(&chr.to_uppercase().to_string()) {
-                    Some(chr)
-                } else {
-                    None
-                },
-            ))
+            Ok(RegexBuilderYieldResponse::GenerateMatchByPrefix(Some(chr)))
         }
         other => panic!("Unexpected task for worker thread: {:?}", other),
     }

@@ -107,6 +107,34 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
         Some(result_fn(result))
     }
 
+    /// Basically: self.keys = intersect(self.keys, other.keys);
+    pub fn sync_keys<U>(&self, other: &FixedSizedMap<K, U, N>) {
+        let mut result: [Option<(K, V)>; N] = [const { None }; N];
+        let mut our_items = self.items.borrow_mut();
+        let our_len = self.len();
+        let other_items = other.items.borrow();
+        let other_len = other.len();
+
+        let mut i_write = 0;
+        for i in 0..other_len {
+            let (key, other_val) = other_items[i].as_ref().unwrap();
+            let our_idx = self._search(&*our_items, key);
+            if let Ok(j) = our_idx {
+                let (key2, val) = our_items[j].take().unwrap();
+                result[i_write] = Some((key2, val));
+                i_write += 1;
+            }
+        }
+
+        self.size.replace(i_write);
+        for i in 0..i_write {
+            our_items[i].replace(result[i].take().unwrap());
+        }
+        for i in i_write..our_len {
+            our_items[i] = None;
+        }
+    }
+
     /// edit every entry in this map. edit_fn should return true to stop the iteration.
     pub fn map_edit(&self, mut edit_fn: impl FnMut(&mut (K, V)) -> bool) {
         let mut items = self.items.borrow_mut();

@@ -32,7 +32,7 @@ pub struct AsyncRuntime<
 > {
     has_unblock: RefCell<Option<(YieldReason, YieldResponse)>>,
     has_new_future: AtomicBool,
-    pending_futures: FixedSizedMap<YieldReason, usize, MAX_PENDING>,
+    pub(crate) pending_futures: FixedSizedMap<YieldReason, usize, MAX_PENDING>,
 }
 
 /// AsyncYield is a helper for KRSM async loops.

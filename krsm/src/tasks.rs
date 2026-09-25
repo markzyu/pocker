@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR GPL-3.0-or-later
-use crate::{AsyncRuntimeError, FixedSizedMap};
+use crate::{AsyncRuntime, AsyncRuntimeError, FixedSizedMap};
 
 /// This is a helper struct that tracks any YieldReason that is currently
 /// running on the "synchronous" side of your code. It should not be used
@@ -34,6 +34,10 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
 
     pub fn is_task_complete(&self, reason: &YieldReason) -> bool {
         self.tasks.read(reason, |x| x.is_some()) == Some(true)
+    }
+
+    pub fn sync(&self, runtime: &AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>) {
+        self.tasks.sync_keys(&runtime.pending_futures);
     }
 
     pub fn remove_completed(&self, reason: &YieldReason) -> Option<YieldResponse> {
