@@ -280,13 +280,12 @@ fn main() -> anyhow::Result<()> {
         let keyphrase = { builder.keyphrase.borrow().clone() };
         let matches = { builder.curr_matches.borrow().clone() };
         let read_file = { builder.fuzzy_search_path.borrow().clone() };
+        let words_set: HashSet<_> = paragraph.split(" ").collect();
+        let words_list: Vec<_> = words_set.iter().take(50).map(ToString::to_string).collect();
+
         (sender, receiver) = channel::<TaskTracker>();
         std::thread::spawn(move || {
             let work_result = tracker.work_in_batches(4, |batch| {
-                let words_set: HashSet<_> = paragraph.split(" ").collect();
-                let words_list: Vec<_> =
-                    words_set.iter().take(50).map(ToString::to_string).collect();
-
                 // Handle std fs calls first
                 std_fs_worker_fn(batch, &read_file)?;
 
