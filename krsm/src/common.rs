@@ -117,7 +117,7 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
 
         let mut i_write = 0;
         for i in 0..other_len {
-            let (key, other_val) = other_items[i].as_ref().unwrap();
+            let (key, _) = other_items[i].as_ref().unwrap();
             let our_idx = self._search(&*our_items, key);
             if let Ok(j) = our_idx {
                 let (key2, val) = our_items[j].take().unwrap();
