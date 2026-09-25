@@ -9,7 +9,7 @@ This crate is a single-threaded, pinned, no_std async runner for futures. It's b
 Instead of providing an executor and a reactor, KRSM lets you (the downstream) define yields, perform non-blocking I/O on behalf of async functions, and take control of each individual polling step.
 
 
-```rust
+```rust,ignore
 // async side: wait for various yields, tagged by reason
 let status = futures_lite::future::or(
     runtime.new_pending_future(WaitForIOResponse),
