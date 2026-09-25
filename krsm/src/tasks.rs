@@ -13,7 +13,6 @@ use crate::{AsyncRuntime, AsyncRuntimeError, FixedSizedMap};
 /// you would like, then pass it to a worker thread, and upon worker thread
 /// completion, pass it back, for async thread to unblock tracked futures
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct TaskTracker<
     YieldReason: Copy + Eq + Ord,
     YieldResponse: PartialEq,
@@ -22,7 +21,6 @@ pub struct TaskTracker<
     tasks: FixedSizedMap<YieldReason, Option<YieldResponse>, MAX_PENDING>,
 }
 
-#[allow(dead_code)]
 impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: usize>
     TaskTracker<YieldReason, YieldResponse, MAX_PENDING>
 {

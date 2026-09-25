@@ -11,7 +11,7 @@ use std::sync::mpsc::channel;
 
 /// This is an example of a HTTP client with business logics. It uses AIs like
 /// OpenJEV to find semantic matches in any **English** text, given an input prompt.
-/// 
+///
 /// This example doesn't implement the networking I/O logics and instead relies
 /// on `minreq` to perform the actual I/O.
 ///
@@ -20,7 +20,6 @@ use std::sync::mpsc::channel;
 /// The `YieldReason` would not carry query params. Instead, those are stored on
 /// the state machine itself, in `HttpClient` struct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(dead_code)]
 enum HttpClientYieldReason {
     /// Ask OpenJEV whether the paragraph is a match
     FuzzyMatchesParagraph(usize),
@@ -44,7 +43,6 @@ type ExampleAndMatch = Vec<String>;
 type ExamplesAndMatches = HashMap<ExampleId, ExampleAndMatch>;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(dead_code)]
 enum HttpClientYieldResponse {
     FuzzyMatchesParagraph(bool),
     GenerateMatch(Option<String>),
@@ -60,7 +58,6 @@ type AsyncRuntime = krsm::AsyncRuntime<HttpClientYieldReason, HttpClientYieldRes
 ///
 /// Note: One potential future extension is to save entire copies of HttpClient states, and allow
 ///       user input to revert back to a past copy, and make manual corrections to AI outputs/trajectory
-#[allow(dead_code)]
 struct HttpClient<'a> {
     runtime: &'a AsyncRuntime,
     keyphrase: RefCell<String>,
@@ -74,12 +71,7 @@ struct HttpClient<'a> {
     // (We should distinguish the two eventually and allow users to change file selection)
     fuzzy_search_path: RefCell<PathBuf>,
 
-    // this should contain user_examples as a subset
     known_examples: RefCell<ExamplesAndMatches>,
-
-    // these should track user interactions separately
-    user_examples: RefCell<ExamplesAndMatches>,
-    anti_examples: RefCell<ExamplesAndMatches>,
 }
 
 type TResult<T> = Result<T, krsm::AsyncRuntimeError>;
@@ -97,8 +89,6 @@ impl<'a> HttpClient<'a> {
 
             fuzzy_search_path: RefCell::new(path),
             known_examples: RefCell::new(HashMap::new()),
-            user_examples: RefCell::new(HashMap::new()),
-            anti_examples: RefCell::new(HashMap::new()),
         }
     }
 
@@ -136,7 +126,7 @@ impl<'a> HttpClient<'a> {
         }
     }
 
-    async fn fuzzy_scan_file(&self) -> TResult<bool> {
+    async fn fuzzy_scan_file(&self) -> TResult<&RefCell<ExamplesAndMatches>> {
         let response = self
             .runtime
             .new_pending_future(HttpClientYieldReason::ReadFileIntoParagraphs(
@@ -146,7 +136,6 @@ impl<'a> HttpClient<'a> {
         let HttpClientYieldResponse::ReadFileIntoParagraphs(paragraphs) = response else {
             panic!("Invalid response for ReadFileIntoParagraphs");
         };
-        let mut has_match = false;
         let mut skip_words: VecDeque<String> = VecDeque::new();
         for paragraph in paragraphs {
             let mut is_skip = false;
@@ -184,7 +173,6 @@ impl<'a> HttpClient<'a> {
             }
             if response1? == HttpClientYieldResponse::FuzzyMatchesParagraph(true) {
                 let matches = self._generate_fuzzy_match().await?;
-                has_match = true;
 
                 println!("");
                 println!("Matches: {:?}", &matches);
@@ -194,7 +182,7 @@ impl<'a> HttpClient<'a> {
                 examples.insert(paragraph.clone(), matches);
             }
         }
-        Ok(has_match)
+        Ok(&self.known_examples)
     }
 }
 
@@ -273,7 +261,8 @@ fn main() -> anyhow::Result<()> {
 
     loop {
         let result = unsafe { runtime.run_async_step(&mut future)? };
-        if let Some(_) = result {
+        if let Some(examples) = result {
+            println!("Results: {:?}", &examples?.borrow());
             break;
         }
 
@@ -498,9 +487,7 @@ fn worker_fn(
                     paragraph.push_str(&line.trim());
                 }
             }
-            Ok(HttpClientYieldResponse::ReadFileIntoParagraphs(
-                paragraphs,
-            ))
+            Ok(HttpClientYieldResponse::ReadFileIntoParagraphs(paragraphs))
         }
     }
 }
