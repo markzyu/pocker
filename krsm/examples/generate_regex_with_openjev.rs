@@ -1,4 +1,4 @@
-use krsm::TaskTracker;
+use krsm::{AsyncRuntimeError, TaskTracker};
 // SPDX-License-Identifier: MIT OR GPL-3.0-or-later
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -19,6 +19,8 @@ enum RegexBuilderYieldReason {
     GenerateMatch(usize),
     /// Ask OpenJEV to check the list of matches is complete
     GenerateMatchFinalCheck(usize),
+    /// Ask OpenJEV to pick a keyword that will cause auto skipping of paragraphs
+    GenerateSkipKeyword(usize),
     GenerateRegex(usize),
     UserInputAddMatch,
     UserInputRejectMatch,
@@ -56,6 +58,7 @@ enum RegexBuilderYieldResponse {
     FuzzyMatchesParagraph(bool),
     GenerateMatch(Option<String>),
     GenerateMatchFinalCheck(bool),
+    GenerateSkipKeyword(Option<String>),
     GenerateRegex(RegexResponse),
     // (example paragraph, matched text)
     UserInputAddMatch(String, String),
@@ -275,48 +278,19 @@ fn main() -> anyhow::Result<()> {
             continue;
         };
 
-        tracker.sync(&runtime);
-        let completed_reason = runtime.check_pending_reasons(|x| {
-            if let Some(x) = x {
-                tracker.is_task_complete(&x)
-            } else {
-                false
-            }
-        })?;
-        if let Some(reason) = completed_reason {
-            let response = tracker.remove_completed(&reason).unwrap();
-            runtime.unblock_futures(reason, response)?;
-            maybe_tracker.replace(tracker);
-            continue;
-        }
-
-        if tracker.len() > 0 {
-            // We can't queue new tasks until we unblock the completed ones, one by one
+        // Wait until all tracked tasks from previous worker batch are done
+        if !tracker.sync(&runtime)? {
             maybe_tracker.replace(tracker);
             continue;
         }
 
         // Queue the new tasks AND start a new worker thread
-        let mut lowpri_reasons: Vec<RegexBuilderYieldReason> = Vec::new();
-        runtime.check_pending_reasons(|reason| {
-            if let Some(reason) = reason {
-                lowpri_reasons.push(reason);
-            }
-            false
+        tracker.register_if(&runtime, |reason| match reason {
+            RegexBuilderYieldReason::FuzzyMatchesParagraph(_) => true,
+            RegexBuilderYieldReason::GenerateMatch(_) => true,
+            RegexBuilderYieldReason::GenerateMatchFinalCheck(_) => true,
+            _ => false,
         })?;
-        for reason in lowpri_reasons {
-            match reason {
-                RegexBuilderYieldReason::FuzzyMatchesParagraph(_) => tracker.register(reason)?,
-                RegexBuilderYieldReason::GenerateMatch(_) => tracker.register(reason)?,
-                RegexBuilderYieldReason::GenerateMatchFinalCheck(_) => tracker.register(reason)?,
-                _ => {}
-            }
-        }
-
-        if tracker.len() == 0 {
-            // This is unexpected: We didn't find any valid reason and the future is still blocked
-            panic!("Cannot unblock async futures. It is stuck.");
-        }
 
         let paragraph = { builder.curr_paragraph.borrow().clone() };
         let keyphrase = { builder.keyphrase.borrow().clone() };

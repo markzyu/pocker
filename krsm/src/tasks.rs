@@ -32,15 +32,38 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
         }
     }
 
-    pub fn is_task_complete(&self, reason: &YieldReason) -> bool {
+    /// Returns true if both runtime and tracker are ready for new tasks to `register()`
+    pub fn sync(
+        &self,
+        runtime: &AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>,
+    ) -> Result<bool, AsyncRuntimeError> {
+        self.tasks.sync_keys(&runtime.pending_futures);
+        let completed_reason = runtime.check_pending_reasons(|x| {
+            if let Some(x) = x {
+                self.is_task_complete(&x)
+            } else {
+                false
+            }
+        })?;
+        if let Some(reason) = completed_reason {
+            // We have just unblocked a future, and must run_async_step
+            let response = self.remove_completed(&reason).unwrap();
+            runtime.unblock_futures(reason, response)?;
+            return Ok(false);
+        }
+
+        if self.len() > 0 {
+            // We can't register new tasks until we unblock the completed ones, one by one
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    fn is_task_complete(&self, reason: &YieldReason) -> bool {
         self.tasks.read(reason, |x| x.is_some()) == Some(true)
     }
 
-    pub fn sync(&self, runtime: &AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>) {
-        self.tasks.sync_keys(&runtime.pending_futures);
-    }
-
-    pub fn remove_completed(&self, reason: &YieldReason) -> Option<YieldResponse> {
+    fn remove_completed(&self, reason: &YieldReason) -> Option<YieldResponse> {
         self.tasks.remove(reason).flatten()
     }
 
@@ -51,6 +74,30 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
     /// Register a new pending task
     pub fn register(&self, reason: YieldReason) -> Result<(), AsyncRuntimeError> {
         self.tasks.set_default(reason, None)?;
+        Ok(())
+    }
+
+    /// Register many new pending tasks, only if match_fn returns true. This function does not short circuit.
+    pub fn register_if(
+        &self,
+        runtime: &AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>,
+        match_fn: impl Fn(&YieldReason) -> bool,
+    ) -> Result<(), AsyncRuntimeError> {
+        let mut err: Option<AsyncRuntimeError> = None;
+        runtime.check_pending_reasons(|reason| {
+            let Some(reason) = reason else {
+                return false;
+            };
+            if match_fn(&reason) {
+                if let Err(e) = self.register(reason) {
+                    err.replace(e);
+                }
+            }
+            false
+        })?;
+        if let Some(e) = err {
+            return Err(e.into());
+        }
         Ok(())
     }
 
