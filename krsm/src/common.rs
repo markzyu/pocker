@@ -108,7 +108,7 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
     }
 
     /// Basically: self.keys = intersect(self.keys, other.keys);
-    pub fn sync_keys<U>(&self, other: &FixedSizedMap<K, U, N>) {
+    pub fn inner_join_keys<U>(&self, other: &FixedSizedMap<K, U, N>) {
         let mut result: [Option<(K, V)>; N] = [const { None }; N];
         let mut our_items = self.items.borrow_mut();
         let our_len = self.len();

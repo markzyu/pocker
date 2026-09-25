@@ -37,7 +37,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
         &self,
         runtime: &AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>,
     ) -> Result<bool, AsyncRuntimeError> {
-        self.tasks.sync_keys(&runtime.pending_futures);
+        self.tasks.inner_join_keys(&runtime.pending_futures);
         let completed_reason = runtime.check_pending_reasons(|x| {
             if let Some(x) = x {
                 self.is_task_complete(&x)
