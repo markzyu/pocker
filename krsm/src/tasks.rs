@@ -23,6 +23,8 @@ pub struct TaskTracker<
     tasks: FixedSizedMap<YieldReason, Option<YieldResponse>, MAX_PENDING>,
 }
 
+pub type TaskBatch<YieldReason, YieldResponse> = [Option<(YieldReason, Option<YieldResponse>)>];
+
 impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: usize>
     TaskTracker<YieldReason, YieldResponse, MAX_PENDING>
 {
@@ -101,7 +103,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
         Ok(())
     }
 
-    /// Run worker_fn, per pending task
+    /// Run worker_fn, once per pending task
     pub fn work<E>(
         &self,
         worker_fn: impl Fn(YieldReason) -> Result<YieldResponse, E>,
@@ -115,6 +117,25 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
                 Err(e) => {
                     err.replace(e);
                 }
+            }
+            false
+        });
+        if let Some(e) = err {
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Run worker_fn, once per batch of tasks
+    pub fn work_in_batches<E>(
+        &self,
+        batch_size: usize,
+        worker_fn: impl Fn(&mut TaskBatch<YieldReason, YieldResponse>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut err: Option<E> = None;
+        self.tasks.map_edit_batches(batch_size, |batch| {
+            if let Err(e) = worker_fn(batch) {
+                err.replace(e);
             }
             false
         });
