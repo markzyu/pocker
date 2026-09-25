@@ -12,15 +12,15 @@ Instead of providing an executor and a reactor, KRSM lets you (the downstream) d
 ```rust
 // async side: wait for various yields, tagged by reason
 let status = futures_lite::future::or(
-  runtime.new_pending_future(WaitForIOResponse),
-  runtime.new_pending_future(WaitForUserInput),
+    runtime.new_pending_future(WaitForIOResponse),
+    runtime.new_pending_future(WaitForUserInput),
 ).await?;
 
 // sync side: you own the loop
-let future = your_async_fn();
+let mut future = your_async_fn();
 loop {
-    if let Some(done) = unsafe { runtime.run_async_step(&mut future) }? {
-        break done;
+    if let Some(result) = unsafe { runtime.run_async_step(&mut future) }? {
+        return result;
     }
     if let Some(event) = check_user_input_non_blocking() {      // your I/O, outside async
         runtime.unblock_futures(WaitForUserInput, event)?;      // resume exactly one of the many concurrent futures
