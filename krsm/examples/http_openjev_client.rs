@@ -327,6 +327,7 @@ fn worker_fn(
     let words_set: HashSet<_> = paragraph.split(" ").collect();
     let words_list: Vec<_> = words_set.iter().take(50).collect();
 
+    // Send request
     let request = minreq::post(&url).with_header("Authorization", &key_header);
     let response = match reason {
         HttpClientYieldReason::FuzzyMatchesParagraph(_) => {

@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: MIT OR GPL-3.0-or-later
 use crate::{AsyncRuntime, AsyncRuntimeError, FixedSizedMap};
 
-/// This is a helper struct that tracks any YieldReason that is currently
-/// running on the "synchronous" side of your code. It should not be used
-/// from within async.
+/// This is a helper struct for managing tasks offloaded from AsyncRuntime to a
+/// worker thread. It should not be called from within async.
 ///
 /// This is helpful, for example, if you use a second core/thread that runs
 /// synchronous I/O in batches, such that I/O is nonblocking.
 ///
-/// This struct is `Send` and not `Sync`. You should create a `TaskTracker`
-/// on the async thread, call `register` to track as many pending tasks as
-/// you would like, then pass it to a worker thread, and upon worker thread
-/// completion, pass it back, for async thread to unblock tracked futures
+/// This struct is `Send` and not `Sync`. To use it, you should:
+///
+/// 1. Create a `TaskTracker` on the async thread
+/// 2. Call `TaskTracker::sync` to keep the tracker and `AsyncRuntime` in sync.
+/// 3. Call `TaskTracker::register_if` to track relevant YieldReason from async.
+/// 4. Pass `TaskTracker` to a worker thread, which runs `TaskTracker::work`
+/// 6. Upon thread completion, pass `TaskTracker` back, so that `TaskTracker::sync` can unblock completed futures.
 #[derive(Debug)]
 pub struct TaskTracker<
     YieldReason: Copy + Eq + Ord,
