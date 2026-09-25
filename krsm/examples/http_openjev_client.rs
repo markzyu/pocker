@@ -11,14 +11,17 @@ use std::sync::mpsc::channel;
 
 /// This is an example of a HTTP client with business logics. It uses AIs like
 /// OpenJEV to find semantic matches in any **English** text, given an input prompt.
+/// 
+/// This example doesn't implement the networking I/O logics and instead relies
+/// on `minreq` to perform the actual I/O.
 ///
 /// Each `YieldReason` here is just a http or an I/O request
 ///
 /// The `YieldReason` would not carry query params. Instead, those are stored on
-/// the state machine itself, in `RegexBuilder` struct.
+/// the state machine itself, in `HttpClient` struct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[allow(dead_code)]
-enum RegexBuilderYieldReason {
+enum HttpClientYieldReason {
     /// Ask OpenJEV whether the paragraph is a match
     FuzzyMatchesParagraph(usize),
     /// Ask OpenJEV to pick a word from the paragraph text (by index)
@@ -40,26 +43,9 @@ type ExampleAndMatch = Vec<String>;
 /// maps the paragraph string to its list of known matches
 type ExamplesAndMatches = HashMap<ExampleId, ExampleAndMatch>;
 
-// 62 + 9 + 20 + 5 = 96 total choices for JEV
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[allow(dead_code)]
-enum RegexResponse {
-    RestartFromEmpty,
-    // a-z A-Z 0-9
-    AppendChar(char),
-    // * ? + ( ) | ! . \\
-    AppendRegexSymbol(char),
-    AppendAnyDigit,
-    AppendAnyWord,
-    AppendAnyAlphanumeric,
-    // 1-20
-    Backspace(usize),
-    Finish,
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(dead_code)]
-enum RegexBuilderYieldResponse {
+enum HttpClientYieldResponse {
     FuzzyMatchesParagraph(bool),
     GenerateMatch(Option<String>),
     GenerateMatchFinalCheck(bool),
@@ -67,15 +53,15 @@ enum RegexBuilderYieldResponse {
     ReadFileIntoParagraphs(Vec<String>),
 }
 
-type AsyncRuntime = krsm::AsyncRuntime<RegexBuilderYieldReason, RegexBuilderYieldResponse>;
+type AsyncRuntime = krsm::AsyncRuntime<HttpClientYieldReason, HttpClientYieldResponse>;
 
 /// This is a state machine that only yields when interacting with AI and with user input
 /// Even though it has "async" syntax, it doesn't implement asyncio and instead relies on a worker thread.
 ///
-/// Note: One potential future extension is to save entire copies of RegexBuilder states, and allow
+/// Note: One potential future extension is to save entire copies of HttpClient states, and allow
 ///       user input to revert back to a past copy, and make manual corrections to AI outputs/trajectory
 #[allow(dead_code)]
-struct RegexBuilder<'a> {
+struct HttpClient<'a> {
     runtime: &'a AsyncRuntime,
     keyphrase: RefCell<String>,
 
@@ -98,7 +84,7 @@ struct RegexBuilder<'a> {
 
 type TResult<T> = Result<T, krsm::AsyncRuntimeError>;
 
-impl<'a> RegexBuilder<'a> {
+impl<'a> HttpClient<'a> {
     fn new(runtime: &'a AsyncRuntime, keyphrase: String, path: PathBuf) -> Self {
         Self {
             runtime,
@@ -126,10 +112,10 @@ impl<'a> RegexBuilder<'a> {
     /// The input paragraph must contain a fuzzy match
     async fn _generate_fuzzy_match(&self) -> TResult<Vec<String>> {
         loop {
-            let future = RegexBuilderYieldReason::GenerateMatchFinalCheck(self._ticket());
+            let future = HttpClientYieldReason::GenerateMatchFinalCheck(self._ticket());
             let response = self.runtime.new_pending_future(future).await?;
 
-            if RegexBuilderYieldResponse::GenerateMatchFinalCheck(true) == response {
+            if HttpClientYieldResponse::GenerateMatchFinalCheck(true) == response {
                 let mut result_list = self.curr_matches.borrow_mut();
                 if result_list.len() > 0 {
                     let list = result_list.clone();
@@ -138,9 +124,9 @@ impl<'a> RegexBuilder<'a> {
                 }
             }
 
-            let future = RegexBuilderYieldReason::GenerateMatch(self._ticket());
+            let future = HttpClientYieldReason::GenerateMatch(self._ticket());
             let response = self.runtime.new_pending_future(future).await?;
-            let RegexBuilderYieldResponse::GenerateMatch(str) = response else {
+            let HttpClientYieldResponse::GenerateMatch(str) = response else {
                 panic!("Invalid response for GenerateMatch");
             };
             if let Some(str) = &str {
@@ -153,11 +139,11 @@ impl<'a> RegexBuilder<'a> {
     async fn fuzzy_scan_file(&self) -> TResult<bool> {
         let response = self
             .runtime
-            .new_pending_future(RegexBuilderYieldReason::ReadFileIntoParagraphs(
+            .new_pending_future(HttpClientYieldReason::ReadFileIntoParagraphs(
                 self._ticket(),
             ))
             .await?;
-        let RegexBuilderYieldResponse::ReadFileIntoParagraphs(paragraphs) = response else {
+        let HttpClientYieldResponse::ReadFileIntoParagraphs(paragraphs) = response else {
             panic!("Invalid response for ReadFileIntoParagraphs");
         };
         let mut has_match = false;
@@ -179,14 +165,14 @@ impl<'a> RegexBuilder<'a> {
 
             println!("Paragraph: {}", &paragraph);
             self.curr_paragraph.replace(paragraph.clone());
-            let future1 = RegexBuilderYieldReason::FuzzyMatchesParagraph(self._ticket());
-            let future2 = RegexBuilderYieldReason::GenerateSkipKeyword(self._ticket());
+            let future1 = HttpClientYieldReason::FuzzyMatchesParagraph(self._ticket());
+            let future2 = HttpClientYieldReason::GenerateSkipKeyword(self._ticket());
             let (response1, response2) = futures_lite::future::zip(
                 self.runtime.new_pending_future(future1),
                 self.runtime.new_pending_future(future2),
             )
             .await;
-            if let RegexBuilderYieldResponse::GenerateSkipKeyword(word) = response2? {
+            if let HttpClientYieldResponse::GenerateSkipKeyword(word) = response2? {
                 if let Some(word) = word {
                     if word.chars().all(char::is_alphanumeric) {
                         skip_words.push_back(word);
@@ -196,7 +182,7 @@ impl<'a> RegexBuilder<'a> {
                     }
                 }
             }
-            if response1? == RegexBuilderYieldResponse::FuzzyMatchesParagraph(true) {
+            if response1? == HttpClientYieldResponse::FuzzyMatchesParagraph(true) {
                 let matches = self._generate_fuzzy_match().await?;
                 has_match = true;
 
@@ -272,18 +258,18 @@ fn main() -> anyhow::Result<()> {
     }
 
     let runtime = AsyncRuntime::new()?;
-    let builder = RegexBuilder::new(&runtime, keyphrase, pathbuf);
+    let builder = HttpClient::new(&runtime, keyphrase, pathbuf);
     let mut future = builder.fuzzy_scan_file();
 
     // Two falsey states:
     //    - None means the worker thread is currently alive
     //    - Some(0) means the worker thread is done and there are no more tracked tasks
-    let mut maybe_tracker: Option<TaskTracker<RegexBuilderYieldReason, RegexBuilderYieldResponse>> =
+    let mut maybe_tracker: Option<TaskTracker<HttpClientYieldReason, HttpClientYieldResponse>> =
         Some(TaskTracker::new());
 
     #[allow(unused_assignments)]
     let (mut sender, mut receiver) =
-        channel::<TaskTracker<RegexBuilderYieldReason, RegexBuilderYieldResponse>>();
+        channel::<TaskTracker<HttpClientYieldReason, HttpClientYieldResponse>>();
 
     loop {
         let result = unsafe { runtime.run_async_step(&mut future)? };
@@ -309,11 +295,11 @@ fn main() -> anyhow::Result<()> {
 
         // Queue the new tasks AND start a new worker thread
         tracker.register_if(&runtime, |reason| match reason {
-            RegexBuilderYieldReason::FuzzyMatchesParagraph(_) => true,
-            RegexBuilderYieldReason::GenerateMatch(_) => true,
-            RegexBuilderYieldReason::GenerateMatchFinalCheck(_) => true,
-            RegexBuilderYieldReason::GenerateSkipKeyword(_) => true,
-            RegexBuilderYieldReason::ReadFileIntoParagraphs(_) => true,
+            HttpClientYieldReason::FuzzyMatchesParagraph(_) => true,
+            HttpClientYieldReason::GenerateMatch(_) => true,
+            HttpClientYieldReason::GenerateMatchFinalCheck(_) => true,
+            HttpClientYieldReason::GenerateSkipKeyword(_) => true,
+            HttpClientYieldReason::ReadFileIntoParagraphs(_) => true,
         })?;
 
         let paragraph = { builder.curr_paragraph.borrow().clone() };
@@ -321,7 +307,7 @@ fn main() -> anyhow::Result<()> {
         let matches = { builder.curr_matches.borrow().clone() };
         let read_file = { builder.fuzzy_search_path.borrow().clone() };
         (sender, receiver) =
-            channel::<TaskTracker<RegexBuilderYieldReason, RegexBuilderYieldResponse>>();
+            channel::<TaskTracker<HttpClientYieldReason, HttpClientYieldResponse>>();
         std::thread::spawn(move || {
             if let Err(e) = tracker
                 .work(|reason| worker_fn(reason, &paragraph, &keyphrase, &matches, &read_file))
@@ -339,12 +325,12 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn worker_fn(
-    reason: RegexBuilderYieldReason,
+    reason: HttpClientYieldReason,
     paragraph: &String,
     keyphrase: &String,
     matches: &Vec<String>,
     read_path: &PathBuf,
-) -> anyhow::Result<RegexBuilderYieldResponse> {
+) -> anyhow::Result<HttpClientYieldResponse> {
     let url = std::env::var("OPENJEV_URL")?;
     let key = std::env::var("OPENJEV_KEY")?;
     let key_header = format!("Bearer {}", key);
@@ -356,7 +342,7 @@ fn worker_fn(
 
     let request = minreq::post(&url).with_header("Authorization", &key_header);
     let response = match reason {
-        RegexBuilderYieldReason::FuzzyMatchesParagraph(_) => {
+        HttpClientYieldReason::FuzzyMatchesParagraph(_) => {
             let body: OpenJevRequest<char> =  OpenJevRequest {
                 state: paragraph.clone(),
                 model: model.to_string(),
@@ -375,7 +361,7 @@ fn worker_fn(
             };
             Some(request.with_json(&body)?.send()?)
         }
-        RegexBuilderYieldReason::GenerateMatch(_) => {
+        HttpClientYieldReason::GenerateMatch(_) => {
             let criteria: HashMap<_, _> = words_list
                 .iter()
                 .enumerate()
@@ -401,7 +387,7 @@ fn worker_fn(
             };
             Some(request.with_json(&body)?.send()?)
         }
-        RegexBuilderYieldReason::GenerateMatchFinalCheck(_) => {
+        HttpClientYieldReason::GenerateMatchFinalCheck(_) => {
             let body: OpenJevRequest<char> = OpenJevRequest {
                 state: paragraph.clone(),
                 model: model.to_string(),
@@ -428,7 +414,7 @@ fn worker_fn(
             };
             Some(request.with_json(&body)?.send()?)
         }
-        RegexBuilderYieldReason::GenerateSkipKeyword(_) => {
+        HttpClientYieldReason::GenerateSkipKeyword(_) => {
             let mut criteria: HashMap<_, _> = words_list
                 .iter()
                 .enumerate()
@@ -468,33 +454,33 @@ fn worker_fn(
 
     // Handle response
     match reason {
-        RegexBuilderYieldReason::FuzzyMatchesParagraph(_) => {
+        HttpClientYieldReason::FuzzyMatchesParagraph(_) => {
             let json: OpenJevResponse<char> = response.unwrap().json()?;
-            Ok(RegexBuilderYieldResponse::FuzzyMatchesParagraph(
+            Ok(HttpClientYieldResponse::FuzzyMatchesParagraph(
                 json.answers.item.choice == 'y',
             ))
         }
-        RegexBuilderYieldReason::GenerateMatchFinalCheck(_) => {
+        HttpClientYieldReason::GenerateMatchFinalCheck(_) => {
             let json: OpenJevResponse<char> = response.unwrap().json()?;
-            Ok(RegexBuilderYieldResponse::GenerateMatchFinalCheck(
+            Ok(HttpClientYieldResponse::GenerateMatchFinalCheck(
                 json.answers.item.choice == 'y',
             ))
         }
-        RegexBuilderYieldReason::GenerateMatch(_) => {
+        HttpClientYieldReason::GenerateMatch(_) => {
             let json: OpenJevResponse<String> = response.unwrap().json()?;
             let idx: usize = json.answers.item.choice.parse().unwrap();
-            Ok(RegexBuilderYieldResponse::GenerateMatch(Some(
+            Ok(HttpClientYieldResponse::GenerateMatch(Some(
                 words_list[idx].to_string(),
             )))
         }
-        RegexBuilderYieldReason::GenerateSkipKeyword(_) => {
+        HttpClientYieldReason::GenerateSkipKeyword(_) => {
             let json: OpenJevResponse<String> = response.unwrap().json()?;
             let idx: usize = json.answers.item.choice.parse().unwrap();
-            Ok(RegexBuilderYieldResponse::GenerateSkipKeyword(
+            Ok(HttpClientYieldResponse::GenerateSkipKeyword(
                 words_list.get(idx).map(ToString::to_string),
             ))
         }
-        RegexBuilderYieldReason::ReadFileIntoParagraphs(_) => {
+        HttpClientYieldReason::ReadFileIntoParagraphs(_) => {
             let file = std::fs::File::open(read_path).unwrap();
             let reader = BufReader::new(file);
             let mut paragraphs: Vec<String> = Vec::new();
@@ -512,7 +498,7 @@ fn worker_fn(
                     paragraph.push_str(&line.trim());
                 }
             }
-            Ok(RegexBuilderYieldResponse::ReadFileIntoParagraphs(
+            Ok(HttpClientYieldResponse::ReadFileIntoParagraphs(
                 paragraphs,
             ))
         }
