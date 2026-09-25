@@ -174,9 +174,7 @@ impl<'a> HttpClient<'a> {
             if response1? == HttpClientYieldResponse::FuzzyMatchesParagraph(true) {
                 let matches = self._generate_fuzzy_match().await?;
 
-                println!("");
-                println!("Matches: {:?}", &matches);
-                println!("");
+                println!("\nMatches: {:?}\n", &matches);
 
                 let mut examples = self.known_examples.borrow_mut();
                 examples.insert(paragraph.clone(), matches);
@@ -262,7 +260,7 @@ fn main() -> anyhow::Result<()> {
     loop {
         let result = unsafe { runtime.run_async_step(&mut future)? };
         if let Some(examples) = result {
-            println!("Results: {:?}", &examples?.borrow());
+            println!("\nResults: {:?}", &examples?.borrow());
             break;
         }
 
