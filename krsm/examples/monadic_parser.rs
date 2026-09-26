@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR GPL-3.0-or-later
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::future::Future;
 use std::io::Read;
@@ -46,7 +46,7 @@ type AsyncRuntime = krsm::AsyncRuntime<JsonParserYieldReason, JsonParserYieldRes
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Json {
-    Object(HashMap<String, Json>),
+    Object(BTreeMap<String, Json>),
     Array(Vec<Json>),
     Number(String),
     String(String),
@@ -99,7 +99,7 @@ impl<'a> JsonParser<'a> {
             },
             async {
                 self.parse_whitespaces().await?;
-                Ok(Json::Object(HashMap::default()))
+                Ok(Json::Object(BTreeMap::default()))
             },
         )
         .await?;
@@ -111,7 +111,7 @@ impl<'a> JsonParser<'a> {
     }
 
     /// <members> ::= <member> | <member> "," <members>
-    async fn parse_members(&self) -> JResult<HashMap<String, Json>> {
+    async fn parse_members(&self) -> JResult<BTreeMap<String, Json>> {
         let (key, value) = self.parse_member().await?;
         let mut map = futures_lite::future::or(
             async {
@@ -122,7 +122,7 @@ impl<'a> JsonParser<'a> {
             },
             async {
                 self.new_future(JsonParserYieldReason::EmptyString).await?;
-                Ok(HashMap::new())
+                Ok(BTreeMap::new())
             },
         )
         .await?;
@@ -624,7 +624,7 @@ mod tests {
         let result = run_parser("{\"name\":\"John\",\"age\":30}", &parser, future).unwrap();
         assert_eq!(
             result,
-            Json::Object(HashMap::from([
+            Json::Object(BTreeMap::from([
                 ("name".to_string(), Json::String("John".to_string())),
                 ("age".to_string(), Json::Number("30".to_string()))
             ]))
