@@ -116,14 +116,13 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
     ///
     /// The caller of async runtime uses this to unblock the futures that caused the async step to yield.
     /// Must call this at least once between run_async_step calls
-    pub fn unblock_futures(&self, future_type: YieldReason, status: YieldResponse) -> Result<()> {
+    pub fn unblock_futures(&self, future_type: YieldReason, status: YieldResponse) {
         let has_unblock = { self.has_unblock.borrow().is_some() };
         if has_unblock {
-            return Err(AsyncRuntimeError::TooManyUnblocked);
+            panic!("Unblocking more than one future in a single async step is disallowed");
         }
 
         self.has_unblock.borrow_mut().replace((future_type, status));
-        Ok(())
     }
 
     /// This method is not meant to be called from within async.
@@ -137,32 +136,21 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
 
     /// This method is not meant to be called from within async.
     ///
-    /// This call is unsafe because it doesn't check whether `future` is pinned.
-    ///
-    /// You don't have to pass in a Pin<> but you have to make sure the pointer/reference is effectively
-    /// pinned across all of your `run_async_step` calls.
-    ///
-    /// This function returns a Result but currently has no error case.
-    /// This return type is for future proofing only. (The Err type will always implement Debug.)
-    ///
-    /// Returns: Ok(None) if the future is still incomplete, and has yielded.
-    ///          Ok(Some(async result)) if the future has finished running.
-    pub unsafe fn run_async_step<F: Future>(&self, future: &mut F) -> Result<Option<F::Output>> {
+    /// Returns: None if the future is still incomplete, and has yielded.
+    ///          Some(async result) if the future has finished running.
+    pub fn run_async_step<F: Future>(&self, future: &mut Pin<&mut F>) -> Option<F::Output> {
         let waker = unsafe { Waker::from_raw(RAW_WAKER_WITH_ASSERTIONS) };
         let mut cx = Context::from_waker(&waker);
 
-        // Unsafely declare the future as pinned. (the caller needs to make sure of that)
-        let mut pinned_future = unsafe { Pin::new_unchecked(future) };
-
         // Poll the future exactly once
         self.has_new_future.store(false, Ordering::Relaxed);
-        let result = match pinned_future.as_mut().poll(&mut cx) {
+        let result = match future.as_mut().poll(&mut cx) {
             Poll::Ready(val) => Some(val),
             Poll::Pending => None,
         };
 
         self.has_unblock.replace(None);
-        Ok(result)
+        result
     }
 
     /// This is a function used for unit testing only. It doesn't actually reflect all blockages.
@@ -173,13 +161,12 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
 
     /// Creates a new Async Runtime.
     /// This function returns a Result but currently has no error case.
-    /// This return type is for future proofing only. (The Err type will always implement Debug.)
-    pub fn new() -> Result<Self> {
-        Ok(Self {
+    pub fn new() -> Self {
+        Self {
             has_unblock: RefCell::new(None),
             has_new_future: AtomicBool::default(),
             pending_futures: FixedSizedMap::new(),
-        })
+        }
     }
 
     /// This method is not meant to be called from within async.
@@ -188,14 +175,14 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
     /// The func callback can short circuit and end iteration early by returning true.
     ///
     /// Returns: The item that `func` returned true for. (None otherwise)
-    pub fn check_pending_reasons<F>(&self, mut func: F) -> Result<Option<YieldReason>>
+    pub fn check_pending_reasons<F>(&self, mut func: F) -> Option<YieldReason>
     where
-        F: FnMut(Option<YieldReason>) -> bool,
+        F: FnMut(YieldReason) -> bool,
     {
         let result = self
             .pending_futures
-            .find(|x| func(x.map(|v| v.0)), |(k, _)| *k);
-        Ok(result)
+            .find(|x| x.map(|v| func(v.0)) == Some(true), |(k, _)| *k);
+        result
     }
 }
 
@@ -262,6 +249,7 @@ impl AsyncYielder {
 mod tests {
     use crate::AsyncRuntimeError;
     use crate::futures;
+    use core::pin::pin;
 
     /// This is just an example YieldReason.
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -271,7 +259,7 @@ mod tests {
         WaitForSignal,
     }
 
-    #[derive(Clone, PartialEq)]
+    #[derive(Clone, Debug, PartialEq)]
     /// This is just an example YieldResponse
     struct PtraceStatus {}
 
@@ -279,12 +267,9 @@ mod tests {
 
     #[test]
     fn test_basic_async_function() {
-        let runtime = PtraceAsyncRuntime::new().unwrap();
-        let mut test_future = futures_lite::future::ready(123);
-        assert!(matches!(
-            unsafe { runtime.run_async_step(&mut test_future) },
-            Ok(Some(123))
-        ));
+        let runtime = PtraceAsyncRuntime::new();
+        let mut test_future = pin!(futures_lite::future::ready(123));
+        assert_eq!(runtime.run_async_step(&mut test_future), Some(123));
     }
 
     fn _assert_one_pending_at(runtime: &PtraceAsyncRuntime, idx: usize, reason: PtraceFutureTypes) {
@@ -296,47 +281,38 @@ mod tests {
 
     #[test]
     fn test_basic_blocking_on_built_future() {
-        let runtime = PtraceAsyncRuntime::new().unwrap();
+        let runtime = PtraceAsyncRuntime::new();
         assert_eq!(runtime._pending_futures_size(), 0);
 
-        let mut test_future = runtime.new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall);
-        assert!(matches!(
-            unsafe { runtime.run_async_step(&mut test_future) },
-            Ok(None)
-        ));
+        let mut test_future =
+            pin!(runtime.new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall));
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(runtime._has_new_blockage());
         assert_eq!(runtime._pending_futures_size(), 1);
         _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
 
         // Unblock an irrelevant future
         let event1 = PtraceStatus {};
-        runtime
-            .unblock_futures(PtraceFutureTypes::WaitForSignal, event1)
-            .unwrap();
-        assert!(matches!(
-            unsafe { runtime.run_async_step(&mut test_future) },
-            Ok(None)
-        ));
+        runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event1);
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(!runtime._has_new_blockage());
         assert_eq!(runtime._pending_futures_size(), 1);
         _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
 
         // Unblock the original future
         let event2 = PtraceStatus {};
-        runtime
-            .unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event2.clone())
-            .unwrap();
+        runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event2.clone());
         assert_eq!(runtime._pending_futures_size(), 1);
-        let output = unsafe { runtime.run_async_step(&mut test_future) };
+        let output = runtime.run_async_step(&mut test_future);
         assert_eq!(runtime._pending_futures_size(), 0);
-        assert!(output == Ok(Some(Ok(event2))));
+        assert_eq!(output, Some(Ok(event2)));
         assert!(!runtime._has_new_blockage());
     }
 
     #[test]
     fn test_blocking_on_two_built_futures() {
-        let runtime = PtraceAsyncRuntime::new().unwrap();
-        let mut test_future = async {
+        let runtime = PtraceAsyncRuntime::new();
+        let mut test_future = pin!(async {
             runtime
                 .new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall)
                 .await?;
@@ -344,121 +320,84 @@ mod tests {
                 .new_pending_future(PtraceFutureTypes::WaitForSignal)
                 .await?;
             Ok::<i32, AsyncRuntimeError>(42)
-        };
-        assert!(matches!(
-            unsafe { runtime.run_async_step(&mut test_future) },
-            Ok(None)
-        ));
+        });
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(runtime._has_new_blockage());
 
         // Unblock an irrelevant future
         let event1 = PtraceStatus {};
-        runtime
-            .unblock_futures(PtraceFutureTypes::WaitForSignal, event1)
-            .unwrap();
-        assert!(matches!(
-            unsafe { runtime.run_async_step(&mut test_future) },
-            Ok(None)
-        ));
+        runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event1);
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(!runtime._has_new_blockage());
 
         // Unblock the first future
         let event2 = PtraceStatus {};
-        runtime
-            .unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event2.clone())
-            .unwrap();
-        assert!(matches!(
-            unsafe { runtime.run_async_step(&mut test_future) },
-            Ok(None)
-        ));
+        runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event2.clone());
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(runtime._has_new_blockage());
 
         // Unblock the second future (ignoring the first irrelevant unblock for WaitForSignal)
         let event3 = PtraceStatus {};
-        runtime
-            .unblock_futures(PtraceFutureTypes::WaitForSignal, event3.clone())
-            .unwrap();
-        let output = unsafe { runtime.run_async_step(&mut test_future) };
-        assert!(output == Ok(Some(Ok(42))));
+        runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event3.clone());
+        let output = runtime.run_async_step(&mut test_future);
+        assert_eq!(output, Some(Ok(42)));
         assert!(!runtime._has_new_blockage());
     }
 
     #[test]
     fn test_compatible_with_futures_lite_zip_in_order() {
-        let runtime = PtraceAsyncRuntime::new().unwrap();
-        let mut test_future = futures_lite::future::zip(
+        let runtime = PtraceAsyncRuntime::new();
+        let mut test_future = pin!(futures_lite::future::zip(
             runtime.new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall),
             runtime.new_pending_future(PtraceFutureTypes::WaitForSignal),
-        );
-        assert!(matches!(
-            unsafe { runtime.run_async_step(&mut test_future) },
-            Ok(None)
         ));
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(runtime._has_new_blockage());
 
         // Unblock the first future
         let event2 = PtraceStatus {};
-        runtime
-            .unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event2.clone())
-            .unwrap();
-        assert!(matches!(
-            unsafe { runtime.run_async_step(&mut test_future) },
-            Ok(None)
-        ));
+        runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event2.clone());
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(!runtime._has_new_blockage());
 
         // Unblock the second future
         let event3 = PtraceStatus {};
-        runtime
-            .unblock_futures(PtraceFutureTypes::WaitForSignal, event3.clone())
-            .unwrap();
-        let (output1, output2) =
-            unsafe { runtime.run_async_step(&mut test_future).unwrap().unwrap() };
-        assert!(output1 == Ok(event2));
-        assert!(output2 == Ok(event3));
+        runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event3.clone());
+        let (output1, output2) = runtime.run_async_step(&mut test_future).unwrap();
+        assert_eq!(output1, Ok(event2));
+        assert_eq!(output2, Ok(event3));
         assert!(!runtime._has_new_blockage());
     }
 
     #[test]
     fn test_compatible_with_futures_lite_zip_in_reversed_order() {
-        let runtime = PtraceAsyncRuntime::new().unwrap();
-        let mut test_future = futures_lite::future::zip(
+        let runtime = PtraceAsyncRuntime::new();
+        let mut test_future = pin!(futures_lite::future::zip(
             runtime.new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall),
             runtime.new_pending_future(PtraceFutureTypes::WaitForSignal),
-        );
-        assert!(matches!(
-            unsafe { runtime.run_async_step(&mut test_future) },
-            Ok(None)
         ));
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(runtime._has_new_blockage());
 
         // Unblock the second future
         let event2 = PtraceStatus {};
-        runtime
-            .unblock_futures(PtraceFutureTypes::WaitForSignal, event2.clone())
-            .unwrap();
-        assert!(matches!(
-            unsafe { runtime.run_async_step(&mut test_future) },
-            Ok(None)
-        ));
+        runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event2.clone());
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(!runtime._has_new_blockage());
 
         // Unblock the first future
         let event3 = PtraceStatus {};
-        runtime
-            .unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event3.clone())
-            .unwrap();
-        let (output1, output2) =
-            unsafe { runtime.run_async_step(&mut test_future).unwrap().unwrap() };
-        assert!(output1 == Ok(event3));
-        assert!(output2 == Ok(event2));
+        runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event3.clone());
+        let (output1, output2) = runtime.run_async_step(&mut test_future).unwrap();
+        assert_eq!(output1, Ok(event3));
+        assert_eq!(output2, Ok(event2));
         assert!(!runtime._has_new_blockage());
     }
 
     #[test]
     fn test_compatible_with_futures_lite_or_resolves_first() {
-        let runtime = PtraceAsyncRuntime::new().unwrap();
-        let mut test_future = futures_lite::future::or(
+        let runtime = PtraceAsyncRuntime::new();
+        let mut test_future = pin!(futures_lite::future::or(
             async {
                 runtime
                     .new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall)
@@ -471,11 +410,8 @@ mod tests {
                     .await?;
                 Ok::<i32, AsyncRuntimeError>(456)
             },
-        );
-        assert!(matches!(
-            unsafe { runtime.run_async_step(&mut test_future) },
-            Ok(None)
         ));
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(runtime._has_new_blockage());
         assert_eq!(runtime._pending_futures_size(), 2);
         _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
@@ -483,20 +419,18 @@ mod tests {
 
         // Unblock the first future
         let event = PtraceStatus {};
-        runtime
-            .unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event.clone())
-            .unwrap();
+        runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event.clone());
         assert_eq!(runtime._pending_futures_size(), 2);
-        let output = unsafe { runtime.run_async_step(&mut test_future) };
+        let output = runtime.run_async_step(&mut test_future);
         assert_eq!(runtime._pending_futures_size(), 1);
-        assert!(output == Ok(Some(Ok(234))));
+        assert_eq!(output, Some(Ok(234)));
         assert!(!runtime._has_new_blockage());
     }
 
     #[test]
     fn test_compatible_with_futures_lite_or_resolves_second() {
-        let runtime = PtraceAsyncRuntime::new().unwrap();
-        let mut test_future = futures_lite::future::or(
+        let runtime = PtraceAsyncRuntime::new();
+        let mut test_future = pin!(futures_lite::future::or(
             async {
                 runtime
                     .new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall)
@@ -509,11 +443,8 @@ mod tests {
                     .await?;
                 Ok::<i32, AsyncRuntimeError>(456)
             },
-        );
-        assert!(matches!(
-            unsafe { runtime.run_async_step(&mut test_future) },
-            Ok(None)
         ));
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(runtime._has_new_blockage());
         assert_eq!(runtime._pending_futures_size(), 2);
         _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
@@ -521,14 +452,12 @@ mod tests {
 
         // Unblock the second future
         let event = PtraceStatus {};
-        runtime
-            .unblock_futures(PtraceFutureTypes::WaitForSignal, event.clone())
-            .unwrap();
+        runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event.clone());
         assert_eq!(runtime._pending_futures_size(), 2);
-        let output = unsafe { runtime.run_async_step(&mut test_future) };
+        let output = runtime.run_async_step(&mut test_future);
         assert_eq!(runtime._pending_futures_size(), 1);
         _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
-        assert!(output == Ok(Some(Ok(456))));
+        assert_eq!(output, Some(Ok(456)));
         assert!(!runtime._has_new_blockage());
     }
 
@@ -555,21 +484,16 @@ mod tests {
     #[test]
     fn test_incompatible_with_waker_such_as_futures_lite_yield_now_step1() {
         // futures_lite::future::yield_now() uses a Waker.
-        let runtime = PtraceAsyncRuntime::new().unwrap();
-        let mut test_future = _future_with_waker(&runtime);
+        let runtime = PtraceAsyncRuntime::new();
+        let mut test_future = pin!(_future_with_waker(&runtime));
 
         // Run the first async step, which should not panic
-        assert!(matches!(
-            unsafe { runtime.run_async_step(&mut test_future) },
-            Ok(None)
-        ));
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(runtime._has_new_blockage());
 
         // Unblock the first await
         let event = PtraceStatus {};
-        runtime
-            .unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event.clone())
-            .unwrap();
+        runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event.clone());
     }
 
     #[test]
@@ -578,23 +502,18 @@ mod tests {
     )]
     fn test_incompatible_with_waker_such_as_futures_lite_yield_now_step2() {
         // futures_lite::future::yield_now() uses a Waker.
-        let runtime = PtraceAsyncRuntime::new().unwrap();
-        let mut test_future = _future_with_waker(&runtime);
+        let runtime = PtraceAsyncRuntime::new();
+        let mut test_future = pin!(_future_with_waker(&runtime));
 
         // Run the first async step, which should not panic
-        assert!(matches!(
-            unsafe { runtime.run_async_step(&mut test_future) },
-            Ok(None)
-        ));
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(runtime._has_new_blockage());
 
         // Unblock the first await
         let event = PtraceStatus {};
-        runtime
-            .unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event.clone())
-            .unwrap();
+        runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event.clone());
 
         // Run the first async step, which should panic
-        let _ = unsafe { runtime.run_async_step(&mut test_future) };
+        let _ = runtime.run_async_step(&mut test_future);
     }
 }

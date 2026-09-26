@@ -40,17 +40,11 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
         runtime: &AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>,
     ) -> Result<bool, AsyncRuntimeError> {
         self.tasks.inner_join_keys(&runtime.pending_futures);
-        let completed_reason = runtime.check_pending_reasons(|x| {
-            if let Some(x) = x {
-                self.is_task_complete(&x)
-            } else {
-                false
-            }
-        })?;
+        let completed_reason = runtime.check_pending_reasons(|x| self.is_task_complete(&x));
         if let Some(reason) = completed_reason {
             // We have just unblocked a future, and must run_async_step
             let response = self.remove_completed(&reason).unwrap();
-            runtime.unblock_futures(reason, response)?;
+            runtime.unblock_futures(reason, response);
             return Ok(false);
         }
 
@@ -87,16 +81,13 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
     ) -> Result<(), AsyncRuntimeError> {
         let mut err: Option<AsyncRuntimeError> = None;
         runtime.check_pending_reasons(|reason| {
-            let Some(reason) = reason else {
-                return false;
-            };
             if match_fn(&reason) {
                 if let Err(e) = self.register(reason) {
                     err.replace(e);
                 }
             }
             false
-        })?;
+        });
         if let Some(e) = err {
             return Err(e.into());
         }

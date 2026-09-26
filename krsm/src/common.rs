@@ -7,9 +7,6 @@ use thiserror::Error;
 pub enum AsyncRuntimeError {
     #[error("Cannot enqueue more pending futures, exceeding MAX_PENDING")]
     TooManyPending,
-
-    #[error("Unblocking more than one future in a single async step is disallowed")]
-    TooManyUnblocked,
 }
 
 /// This is the "move" equivalent of slice::copy_within
