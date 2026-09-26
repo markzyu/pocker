@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR GPL-3.0-or-later
 use std::io::Write;
+use std::pin::pin;
 use std::time::{Duration, Instant};
 
 /// Reasons that can cause the finite state machine to transition between states
@@ -120,9 +121,9 @@ impl<'a> TrafficLight<'a> {
 }
 
 fn main() -> std::io::Result<()> {
-    let runtime = AsyncRuntime::new().unwrap();
+    let runtime = AsyncRuntime::new();
     let traffic_light = TrafficLight::new(&runtime);
-    let mut future = traffic_light.run_loop();
+    let mut future = pin!(traffic_light.run_loop());
     let mut stdout = std::io::stdout();
 
     println!(
@@ -131,7 +132,7 @@ fn main() -> std::io::Result<()> {
     crossterm::terminal::enable_raw_mode()?;
 
     loop {
-        let result = unsafe { runtime.run_async_step(&mut future) }.unwrap();
+        let result = runtime.run_async_step(&mut future);
         if let Some(_) = result {
             break;
         }
@@ -153,15 +154,11 @@ fn main() -> std::io::Result<()> {
                     return Ok(());
                 }
                 if key.code == crossterm::event::KeyCode::Char('y') {
-                    runtime
-                        .unblock_futures(TrafficLightYieldReason::SensorAcquire, ())
-                        .unwrap();
+                    runtime.unblock_futures(TrafficLightYieldReason::SensorAcquire, ());
                     is_sensor = true;
                 }
                 if key.code == crossterm::event::KeyCode::Char('n') {
-                    runtime
-                        .unblock_futures(TrafficLightYieldReason::SensorRelease, ())
-                        .unwrap();
+                    runtime.unblock_futures(TrafficLightYieldReason::SensorRelease, ());
                     is_sensor = true;
                 }
             }
@@ -169,9 +166,7 @@ fn main() -> std::io::Result<()> {
 
         if !is_sensor {
             // no keyboard input, do a timer tick
-            runtime
-                .unblock_futures(TrafficLightYieldReason::TimerTick, ())
-                .unwrap();
+            runtime.unblock_futures(TrafficLightYieldReason::TimerTick, ());
 
             // Reset terminal output so we don't keep creating more lines/outputs
             crossterm::execute!(

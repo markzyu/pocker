@@ -1,46 +1,71 @@
 # KRSM: KRSM Rust State Machine
 
-This crate is a single-threaded, pinned, no_std async runner for futures. It's barely an async runtime, because it:
+This crate is a `no_std`, single-threaded, async runner for pinned futures. It's barely an async runtime, because it:
 
 * Requires you to pin the `Future`, and to manually poll it until completion.
-* Does not interact with any system call through async I/O  
-* Does not rely on the wakers to determine when to wake up the polling thread.
+* Does not come with `I/O` libraries, or with direct access to system calls
+* Does not rely on the `Waker` to determine when to wake up the polling thread.
 
 Instead of providing an executor and a reactor, KRSM lets you (the downstream) define yields, perform non-blocking I/O on behalf of async functions, and take control of each individual polling step.
 
 
-```rust,ignore
-// async side: wait for various yields, tagged by reason
-let status = futures_lite::future::or(
-    runtime.new_pending_future(WaitForIOResponse),
-    runtime.new_pending_future(WaitForUserInput),
-).await?;
+```rust
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum YieldReason {
+    WaitForHttp,
+    WaitForUser
+};
 
-// sync side: you own the loop
-let mut future = your_async_fn();
-loop {
-    if let Some(result) = unsafe { runtime.run_async_step(&mut future) }? {
-        return result;
+struct YieldResponse(isize);
+
+type AsyncRuntime = krsm::AsyncRuntime::<YieldReason, YieldResponse>;
+type AsyncResult<T> = Result<T, krsm::AsyncRuntimeError>;
+
+// async side: wait for various yields, tagged by YieldReason
+async fn my_async_func(runtime: &AsyncRuntime) -> AsyncResult<isize> {
+    let val = futures_lite::future::or(
+        runtime.new_pending_future(YieldReason::WaitForHttp),
+        runtime.new_pending_future(YieldReason::WaitForUser),
+    ).await?;
+    Ok(-val.0)
+};
+
+// sync side: you own both the polling loop, and the I/O outside async
+let runtime = AsyncRuntime::new();
+let mut future = core::pin::pin!(my_async_func(&runtime));
+let result = loop {
+    if let Some(result) = runtime.run_async_step(&mut future) {
+        break result;
     }
-    if let Some(event) = check_user_input_non_blocking() {      // your I/O, outside async
-        runtime.unblock_futures(WaitForUserInput, event)?;      // resume exactly one of the many concurrent futures
+    let maybe_user_event = /* check_user_input_non_blocking() */ Some(-42);
+    if let Some(event) = maybe_user_event {
+        runtime.unblock_futures(YieldReason::WaitForUser, YieldResponse(event));
         continue;
     }
-}
+    /* check for http responses */
+};
+
+assert_eq!(result, Ok(42));
 ```
 
-And unlike a generator, or a sans-io request/response channel, KRSM keeps several yields alive at the same time. Each one is tagged with a `YieldReason`, and the caller chooses exactly one to resume per polling step — which means KRSM allows the direct usage of `futures_lite::future::or`.
+Unlike a generator, or a sans-io request/response channel, KRSM keeps several yields alive at the same time. Each one is tagged with a `YieldReason`, and the caller chooses exactly one to resume per polling step — which means KRSM allows the direct usage of both `futures_lite::future::or()` and `futures_lite::future::zip()`.
 
 
 ## Goal
 
-This library aims to be a bare minimum abstraction of Rust compiler's ability to translate async functions into pollable state machines. The goal is to write non-blocking, single-threaded, determinstic state machines using readable, asynchronous descriptions.
+The Rust compiler has an amazing ability to translate async, concurrent logic into pollable state machines. This ability has an undersold potential: it writes potentially complex state machines for you.
 
-Please check out the example state machines in [the `examples` folder](https://github.com/markzyu/pocker/tree/master/krsm/examples).
+Existing crates like `asansio` can take advantage of this through `Sans I/O`: Programs written that way tends to be cleaner. They also become easily testable without any real I/O, because the I/O is just another component you can swap out. However, KRSM is **not automatically** a clean seperation of **Outputs**.
 
-This crate will not eliminate the need for a non blocking I/O. The "non blocking input" part happens outside async.
+Instead,
 
-This "synchronous caller" part of your code would feel a lot like writing old schooled "stack ripping" non-blocking code. It even still has the `YieldReason` switch cases, except some of that spaghetti is now managed by the Rust compiler, and written as async functions.
+* KRSM is more concerned about handling multiple sources of concurrent **Inputs**.
+
+* KRSM aims to provide a minimal abstraction of `async` syntax for that specific concern.
+
+KRSM will not eliminate the need for a non blocking I/O. The "non blocking input" part happens outside async. This "synchronous caller" part of your code would feel a lot like writing old schooled "stack ripping" non-blocking code. It even still has the `YieldReason` switch cases, except some of that spaghetti is now managed by the Rust compiler, and written as async functions.
+
+Please check out the example state machines in [the `examples` folder](https://github.com/markzyu/pocker/tree/master/krsm/examples), to see what various designs look like in KRSM, from monadic parsers to http clients.
 
 ## Caveat 1: Extra constraints on `async` syntax
 

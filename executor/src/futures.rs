@@ -27,4 +27,4 @@ pub struct PtraceStatus {
     pub wait_status: WaitStatus,
 }
 
-pub type PtraceAsyncRuntime = krsm::AsyncRuntime<PtraceFutureTypes, PtraceStatus>;
+pub type PtraceAsyncRuntime = krsm::AsyncRuntime<PtraceFutureTypes, PtraceStatus, 4>;

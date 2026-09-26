@@ -14,7 +14,7 @@ workspace = true
 
 [dependencies]
 pocker-executor = {path = "../executor", version = "0.2"}
-krsm = {path = "../krsm", version = "0.3"}
+krsm = {path = "../krsm", version = "0.4"}
 pocker-procfs = {path = "../procfs", version = "0.2"}
 pocker-ptrace = {path = "../ptrace", version = "0.2"}
 lazy_static = "1.4.0"

@@ -23,6 +23,7 @@ use pocker_ptrace::{is_still_alive, is_trace_stop, waitpid_hang};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::os::fd::RawFd;
+use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -182,7 +183,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> TraceeHandler<PtraceClient> {
         let pid = self.pid;
 
         // Initialize and store async loops and futures
-        let async_runtime = PtraceAsyncRuntime::new().map_err(SysAugError::AsyncRuntime)?;
+        let async_runtime = PtraceAsyncRuntime::new();
         let async_handlers = AsyncTraceeHandler {
             async_runtime: &async_runtime,
             pid: pid.clone(),
@@ -232,7 +233,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> TraceeHandler<PtraceClient> {
             *path_prefix = self.consts.args.chroot.clone();
         }
 
-        let mut main_loop_future = async_handlers.all_tracee_loops();
+        let mut main_loop_future = pin!(async_handlers.all_tracee_loops());
 
         // Attach ptrace to tracee
         self.ptrace_client.attach_to(pid)?;
@@ -240,12 +241,8 @@ impl<PtraceClient: pocker_executor::PtraceClient> TraceeHandler<PtraceClient> {
 
         loop {
             // Drive async logic until it is pending on a future by resuming from where we left off
-            let async_step_result = unsafe {
-                async_runtime
-                    .run_async_step(&mut main_loop_future)
-                    .map_err(SysAugError::AsyncRuntime)
-            };
-            if let Some(exit_code) = async_step_result? {
+            let async_step_result = async_runtime.run_async_step(&mut main_loop_future);
+            if let Some(exit_code) = async_step_result {
                 // Handle signals, special gdb exit, etc
                 if *async_handlers.notifiers.transfer_to_gdb.borrow() {
                     return Ok(self.transfer_to_gdb()?);
@@ -278,24 +275,16 @@ impl<PtraceClient: pocker_executor::PtraceClient> TraceeHandler<PtraceClient> {
 
                 // Unblock different futures in the proper order
                 if let Some(..) = self.get_tracee_maybe_signal(&wait_status)? {
-                    async_runtime
-                        .unblock_futures(PtraceFutureTypes::WaitForSignal, status)
-                        .map_err(SysAugError::AsyncRuntime)?;
+                    async_runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, status);
                     break;
                 } else if let WaitStatus::PtraceEvent(_, _, PTRACE_EVENT_SECCOMP) = &wait_status {
-                    async_runtime
-                        .unblock_futures(PtraceFutureTypes::WaitForPtraceSeccomp, status)
-                        .map_err(SysAugError::AsyncRuntime)?;
+                    async_runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSeccomp, status);
                     break;
                 } else if let WaitStatus::PtraceEvent(..) = &wait_status {
-                    async_runtime
-                        .unblock_futures(PtraceFutureTypes::WaitForPtraceEvent, status)
-                        .map_err(SysAugError::AsyncRuntime)?;
+                    async_runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceEvent, status);
                     break;
                 } else if let WaitStatus::PtraceSyscall(..) = &wait_status {
-                    async_runtime
-                        .unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, status)
-                        .map_err(SysAugError::AsyncRuntime)?;
+                    async_runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, status);
                     break;
                 } else {
                     event!(Level::INFO, "Unknown ptrace event: {:?}", &wait_status);

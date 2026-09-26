@@ -2,14 +2,10 @@
 use core::cell::RefCell;
 use thiserror::Error;
 
-/// This error type is for future proofing only. It will always implement Debug.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AsyncRuntimeError {
     #[error("Cannot enqueue more pending futures, exceeding MAX_PENDING")]
     TooManyPending,
-
-    #[error("Unblocking more than one future in a single async step is disallowed")]
-    TooManyUnblocked,
 }
 
 /// This is the "move" equivalent of slice::copy_within
@@ -17,10 +13,8 @@ pub fn _move_within<T>(slice: &mut [T], range_from: usize, range_to: usize, new_
     assert!(range_to >= range_from);
     let new_end = new_start + range_to - range_from;
     if new_start < range_from {
-        let mut j = new_start;
-        for i in range_from..range_to {
+        for (i, j) in (range_from..range_to).zip(new_start..) {
             slice.swap(i, j);
-            j += 1;
         }
     } else if new_start > range_from {
         let mut j = new_end - 1;
@@ -31,7 +25,13 @@ pub fn _move_within<T>(slice: &mut [T], range_from: usize, range_to: usize, new_
     }
 }
 
-/// A fixed-sized lookup Map, implemented as a sorted array
+/// A no_std lookup Map, implemented as a sorted array.
+///
+/// It's not very fast. Most operations would take `O(N)` time. But `edit()`
+/// and `read()` are slightly faster, at `O(log N)`
+///
+/// This was used as an internal data structure. But please feel free to
+/// reuse it for any other single-threaded purposes.
 #[derive(Debug)]
 pub struct FixedSizedMap<K: Eq + Ord, V, const N: usize> {
     items: RefCell<[Option<(K, V)>; N]>,
@@ -48,6 +48,10 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
 
     pub fn len(&self) -> usize {
         *self.size.borrow()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Perform search in such a way that None shows up at the end of the sorted array
@@ -91,15 +95,13 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
     }
 
     /// Reads an item by array index (for debugging)
-    pub fn read_idx<T>(&self, idx: usize, read_fn: impl Fn(&(K, V)) -> T) -> Option<T> {
+    #[allow(dead_code)]
+    pub(crate) fn read_idx<T>(&self, idx: usize, read_fn: impl Fn(&(K, V)) -> T) -> Option<T> {
         let items = self.items.borrow();
-        match items[idx].as_ref() {
-            None => None,
-            Some(val) => Some(read_fn(val)),
-        }
+        items[idx].as_ref().map(read_fn)
     }
 
-    /// Similar to slice.iter().find()
+    /// Similar to [Iterator::find]
     pub fn find<T>(
         &self,
         mut find_fn: impl FnMut(&Option<(K, V)>) -> bool,
@@ -113,7 +115,7 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
         Some(result_fn(result))
     }
 
-    /// Basically: self.keys = intersect(self.keys, other.keys);
+    /// Basically: `self.keys = intersect(self.keys, other.keys);`
     pub fn inner_join_keys<U>(&self, other: &FixedSizedMap<K, U, N>) {
         let mut result: [Option<(K, V)>; N] = [const { None }; N];
         let mut our_items = self.items.borrow_mut();
@@ -141,7 +143,9 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
         }
     }
 
-    /// edit every entry in this map. edit_fn should return true to stop the iteration.
+    /// Edit every entry in this map.
+    ///
+    /// `edit_fn` can return true to stop the iteration.
     pub fn map_edit(&self, mut edit_fn: impl FnMut(&mut (K, V)) -> bool) {
         let mut items = self.items.borrow_mut();
         let end_idx = self.len();
@@ -153,7 +157,9 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
         }
     }
 
-    /// edit every entry in this map, in batches.
+    /// Edit every entry in this map, in batches.
+    ///
+    /// `edit_fn` can return true to stop the iteration.
     pub fn map_edit_batches(
         &self,
         batch_size: usize,
@@ -185,7 +191,7 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
         }
     }
 
-    /// Returns false if key already exists
+    /// Returns false if the key already exists
     pub fn set_default(&self, key: K, val: V) -> Result<bool, AsyncRuntimeError> {
         let mut items = self.items.borrow_mut();
         let size = self.len();
@@ -202,6 +208,12 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
             }
             Ok(_) => Ok(false),
         }
+    }
+}
+
+impl<K: Eq + Ord, V, const N: usize> Default for FixedSizedMap<K, V, N> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

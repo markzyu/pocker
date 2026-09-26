@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::pin::pin;
 use std::sync::mpsc::channel;
 
 /// This is an example of a HTTP client with business logics. It uses AIs like
@@ -232,9 +233,9 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    let runtime = AsyncRuntime::new()?;
+    let runtime = AsyncRuntime::new();
     let builder = HttpClient::new(&runtime, keyphrase, pathbuf);
-    let mut future = builder.fuzzy_scan_file();
+    let mut future = pin!(builder.fuzzy_scan_file());
 
     // Two falsey states:
     //    - None means the worker thread is currently alive
@@ -245,7 +246,7 @@ fn main() -> anyhow::Result<()> {
     let (mut sender, mut receiver) = channel::<TaskTracker>();
 
     loop {
-        let result = unsafe { runtime.run_async_step(&mut future)? };
+        let result = runtime.run_async_step(&mut future);
         if let Some(examples) = result {
             println!("\nResults: {:?}", &examples?.borrow());
             break;
