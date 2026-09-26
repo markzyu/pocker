@@ -60,6 +60,16 @@ struct FutureDropGuard<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MA
     runtime: &'a AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>,
 }
 
+struct BasicFuture<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize> {
+    future_type: YieldReason,
+    runtime: &'a AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>,
+}
+
+struct AsyncYielderFuture<'a> {
+    orig_poll_number: usize,
+    async_yielder: &'a AsyncYielder,
+}
+
 type Result<T> = core::result::Result<T, AsyncRuntimeError>;
 
 const RAW_WAKER_SHOULD_NOT_BE_CALLED: &'static str =
@@ -116,7 +126,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
         self.pending_futures.set_default(future_type, 0)?;
         self.pending_futures.edit(&future_type, |v| v + 1);
 
-        guard.build().await
+        guard.create_future().await
     }
 
     /// This method is not meant to be called from within async.
@@ -189,22 +199,33 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
     }
 }
 
+impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize> Future
+    for BasicFuture<'a, YieldReason, YieldResponse, MAX_PENDING>
+{
+    type Output = YieldResponse;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        let matches = if let Some((curr_type, _)) = self.runtime.has_unblock.borrow().as_ref() {
+            curr_type == &self.future_type
+        } else {
+            false
+        };
+        if matches && let Some((_, status)) = self.runtime.has_unblock.take() {
+            return Poll::Ready(status);
+        }
+        Poll::Pending
+    }
+}
+
 impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
     FutureDropGuard<'a, YieldReason, YieldResponse, MAX_PENDING>
 {
-    async fn build(&'a self) -> Result<YieldResponse> {
-        let result = futures_lite::future::poll_fn(|_| {
-            let matches = if let Some((curr_type, _)) = self.runtime.has_unblock.borrow().as_ref() {
-                curr_type == &self.future_type
-            } else {
-                false
-            };
-            if matches && let Some((_, status)) = self.runtime.has_unblock.take() {
-                return Poll::Ready(status);
-            }
-            Poll::Pending
-        })
-        .await;
+    async fn create_future(&'a self) -> Result<YieldResponse> {
+        let future = BasicFuture {
+            future_type: self.future_type,
+            runtime: self.runtime,
+        };
+        let result = future.await;
         Ok(result)
     }
 }
@@ -228,23 +249,32 @@ impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize> 
 impl AsyncYielder {
     /// In the example from above, `loop1` calls this function yield to `loop2`
     pub async fn yield_now(&self) {
-        let original_poll_num = { *self.num_polls.borrow() };
-        futures_lite::future::poll_fn(|_| {
-            let new_poll_num = { *self.num_polls.borrow() };
-            // To prevent overflow issues, do not compare with <= or >=
-            if new_poll_num == original_poll_num {
-                Poll::Pending
-            } else {
-                Poll::Ready(())
-            }
-        })
-        .await;
+        let orig_poll_number = { *self.num_polls.borrow() };
+        let future = AsyncYielderFuture {
+            async_yielder: &self,
+            orig_poll_number,
+        };
+        future.await;
     }
 
     /// In the example from above, as soon as `loop2` gets to execute and finishes its turn,
     /// `loop2` must call this function, to allow `loop1` to run again.
     pub fn unblock(&self) {
         *self.num_polls.borrow_mut() += 1;
+    }
+}
+
+impl<'a> Future for AsyncYielderFuture<'a> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        let new_poll_num = { *self.async_yielder.num_polls.borrow() };
+        // To prevent overflow issues, do not compare with <= or >=
+        if new_poll_num == self.orig_poll_number {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
     }
 }
 

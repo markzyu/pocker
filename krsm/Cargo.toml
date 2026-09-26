@@ -11,14 +11,14 @@ edition = "2024"
 workspace = true
 
 [dependencies]
-futures-lite = { version = "2.6.1", default-features = false }
 thiserror = { version = "2.0.20", default-features = false }
 
 [dev-dependencies]
 anyhow = "1.0"
 crossterm = "0.29.0"
-serde_json = "1.0"
+futures-lite = { version = "2.6.1", default-features = false }
 minreq = { version = "3.0.0", features = ["json-using-serde"] }
+serde_json = "1.0"
 
 [dev-dependencies.serde]
 version = "1.0.118"
