@@ -27,7 +27,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 #[derive(Debug)]
 pub struct AsyncRuntime<
     YieldReason: Copy + Eq + Ord,
-    YieldResponse: PartialEq,
+    YieldResponse,
     const MAX_PENDING: usize = 1024,
 > {
     has_unblock: RefCell<Option<(YieldReason, YieldResponse)>>,
@@ -53,12 +53,7 @@ pub struct AsyncYielder {
 }
 
 /// This internal struct helps untrack any futures dropped from the async runtime
-struct FutureDropGuard<
-    'a,
-    YieldReason: Copy + Eq + Ord,
-    YieldResponse: PartialEq,
-    const MAX_PENDING: usize,
-> {
+struct FutureDropGuard<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize> {
     future_type: YieldReason,
     runtime: &'a AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>,
 }
@@ -88,7 +83,7 @@ const RAW_WAKER_WITH_ASSERTIONS: RawWaker = {
     RawWaker::new(core::ptr::null(), &VTABLE)
 };
 
-impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: usize>
+impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
     AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>
 {
     /// Create a new instance of pending future.
@@ -186,7 +181,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
     }
 }
 
-impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: usize>
+impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
     FutureDropGuard<'a, YieldReason, YieldResponse, MAX_PENDING>
 {
     async fn build(&'a self) -> Result<YieldResponse> {
@@ -206,7 +201,7 @@ impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDI
     }
 }
 
-impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: usize> Drop
+impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize> Drop
     for FutureDropGuard<'a, YieldReason, YieldResponse, MAX_PENDING>
 {
     fn drop(&mut self) {
