@@ -13,10 +13,8 @@ pub fn _move_within<T>(slice: &mut [T], range_from: usize, range_to: usize, new_
     assert!(range_to >= range_from);
     let new_end = new_start + range_to - range_from;
     if new_start < range_from {
-        let mut j = new_start;
-        for i in range_from..range_to {
+        for (i, j) in (range_from..range_to).zip(new_start..) {
             slice.swap(i, j);
-            j += 1;
         }
     } else if new_start > range_from {
         let mut j = new_end - 1;
@@ -50,6 +48,10 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
 
     pub fn len(&self) -> usize {
         *self.size.borrow()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Perform search in such a way that None shows up at the end of the sorted array
@@ -96,10 +98,7 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
     #[allow(dead_code)]
     pub(crate) fn read_idx<T>(&self, idx: usize, read_fn: impl Fn(&(K, V)) -> T) -> Option<T> {
         let items = self.items.borrow();
-        match items[idx].as_ref() {
-            None => None,
-            Some(val) => Some(read_fn(val)),
-        }
+        items[idx].as_ref().map(read_fn)
     }
 
     /// Similar to [Iterator::find]
@@ -209,6 +208,12 @@ impl<K: Eq + Ord, V, const N: usize> FixedSizedMap<K, V, N> {
             }
             Ok(_) => Ok(false),
         }
+    }
+}
+
+impl<K: Eq + Ord, V, const N: usize> Default for FixedSizedMap<K, V, N> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

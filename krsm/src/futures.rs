@@ -12,7 +12,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 ///
 /// * `YieldReason`: This must be an Enum that derivces [Copy], [Eq], and [Ord]
 /// * `YieldResponse`: This should be an Enum with similar variants to `YieldReason`.
-///    But it doesn't have to derive the same traits.
+///   But it doesn't have to derive the same traits.
 /// * `MAX_PENDING`: See the "Caveat 2" section of this crate's README doc
 ///
 /// This runtime does **not** support tokio, async I/O, or external async utilities.
@@ -72,7 +72,7 @@ struct AsyncYielderFuture<'a> {
 
 type Result<T> = core::result::Result<T, AsyncRuntimeError>;
 
-const RAW_WAKER_SHOULD_NOT_BE_CALLED: &'static str =
+const RAW_WAKER_SHOULD_NOT_BE_CALLED: &str =
     "Internal error, KRSM Async Runtime detected invalid usage of external async library";
 
 /// This RawWaker is similar to core::task::RawWaker::NOOP, but with an assertion:
@@ -112,13 +112,10 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
     ///
     /// Your async code should have access to this method. This is the **primary method**
     /// through which your async code yields back during an async step.
-    pub async fn new_pending_future<'a>(
-        &'a self,
-        future_type: YieldReason,
-    ) -> Result<YieldResponse> {
+    pub async fn new_pending_future(&self, future_type: YieldReason) -> Result<YieldResponse> {
         let guard = FutureDropGuard::<YieldReason, YieldResponse, MAX_PENDING> {
             future_type,
-            runtime: &self,
+            runtime: self,
         };
 
         // tally relevant counters
@@ -183,10 +180,8 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
     where
         F: FnMut(YieldReason) -> bool,
     {
-        let result = self
-            .pending_futures
-            .find(|x| x.map(|v| func(v.0)) == Some(true), |(k, _)| *k);
-        result
+        self.pending_futures
+            .find(|x| x.map(|v| func(v.0)) == Some(true), |(k, _)| *k)
     }
 
     /// This method is not meant to be called from within async.
@@ -196,6 +191,14 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
     /// finite, state machine, for their use cases.
     pub fn _pending_futures_size(&self) -> usize {
         self.pending_futures.len()
+    }
+}
+
+impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize> Default
+    for AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -251,7 +254,7 @@ impl AsyncYielder {
     pub async fn yield_now(&self) {
         let orig_poll_number = { *self.num_polls.borrow() };
         let future = AsyncYielderFuture {
-            async_yielder: &self,
+            async_yielder: self,
             orig_poll_number,
         };
         future.await;

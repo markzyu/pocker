@@ -39,6 +39,10 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
         self.tasks.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.tasks.len() == 0
+    }
+
     /// Returns true if both runtime and tracker are ready for new tasks to `register()`
     ///
     /// Returns false if any of the following is true:
@@ -58,7 +62,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
             return Ok(false);
         }
 
-        if self.len() > 0 {
+        if !self.is_empty() {
             // We can't register new tasks until we complete all existing tasks, one by one
             return Ok(false);
         }
@@ -96,7 +100,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
             false
         });
         if let Some(e) = err {
-            return Err(e.into());
+            return Err(e);
         }
         Ok(())
     }
@@ -145,5 +149,13 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: 
             return Err(e);
         }
         Ok(())
+    }
+}
+
+impl<YieldReason: Copy + Eq + Ord, YieldResponse: PartialEq, const MAX_PENDING: usize> Default
+    for TaskTracker<YieldReason, YieldResponse, MAX_PENDING>
+{
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -15,3 +15,4 @@ rust_2024_compatibility = "warn"
 
 [workspace.lints.clippy]
 await_holding_lock = "warn"
+collapsible_if = "allow"
