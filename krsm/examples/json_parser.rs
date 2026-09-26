@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
 use std::io::Read;
+use std::pin::pin;
 
 use krsm::AsyncRuntimeError;
 
@@ -466,16 +467,17 @@ impl<'a> JsonParser<'a> {
     }
 }
 
-fn run_parser<T, Fut>(full_str: &str, parser: &JsonParser, mut future: Fut) -> Result<T, String>
+fn run_parser<T, Fut>(full_str: &str, parser: &JsonParser, future: Fut) -> Result<T, String>
 where
     T: Debug,
     Fut: Future<Output = JResult<T>>,
 {
     let mut index = 0;
     let runtime = parser.runtime;
+    let mut pinned = pin!(future);
     loop {
         parser.offset.replace(index);
-        let result = unsafe { runtime.run_async_step(&mut future) }.unwrap();
+        let result = runtime.run_async_step(&mut pinned);
         if let Some(result) = result {
             return Ok(result.map_err(|e| format!("Internal error: {:?}", e))?);
         }
@@ -484,20 +486,16 @@ where
         // And, if there is no more input, return an error.
         if index >= full_str.len() {
             loop {
-                let unblock_reason = runtime
-                    .check_pending_reasons(|reason| match reason {
-                        Some(JsonParserYieldReason::EmptyString) => true,
-                        _ => false,
-                    })
-                    .map_err(|e| format!("Internal error: {:?}", e))?;
+                let unblock_reason = runtime.check_pending_reasons(|reason| match reason {
+                    JsonParserYieldReason::EmptyString => true,
+                    _ => false,
+                });
                 if unblock_reason.is_none() {
                     break;
                 } else {
                     println!("Debug, unblocking EmptyString (exit loop)");
-                    runtime
-                        .unblock_futures(JsonParserYieldReason::EmptyString, "".to_string())
-                        .map_err(|e| format!("Internal error: {:?}", e))?;
-                    let result = unsafe { runtime.run_async_step(&mut future).unwrap() };
+                    runtime.unblock_futures(JsonParserYieldReason::EmptyString, "".to_string());
+                    let result = runtime.run_async_step(&mut pinned);
                     println!("EXITLOOP {:?}", &result);
                     if let Some(result) = result {
                         return Ok(result.map_err(|e| format!("Internal error: {:?}", e))?);
@@ -510,70 +508,56 @@ where
         let single_char = &full_str[index..index + 1];
 
         // Decide which future to unblock, with different priorities (normal > lowpri)
-        let unblock_reason_normal = runtime
-            .check_pending_reasons(|reason| match reason {
-                Some(JsonParserYieldReason::LiteralArrayStart(j)) => {
-                    single_char == "[" && index == j
-                }
-                Some(JsonParserYieldReason::LiteralArrayEnd(j)) => single_char == "]" && index == j,
-                Some(JsonParserYieldReason::LiteralObjectStart(j)) => {
-                    single_char == "{" && index == j
-                }
-                Some(JsonParserYieldReason::LiteralObjectEnd(j)) => {
-                    single_char == "}" && index == j
-                }
-                Some(JsonParserYieldReason::LiteralStringStart(j)) => {
-                    &full_str[index..index + 1] == "\"" && index == j
-                }
-                Some(JsonParserYieldReason::LiteralStringEnd(j)) => {
-                    single_char == "\"" && index == j
-                }
-                Some(JsonParserYieldReason::LiteralColon(j)) => single_char == ":" && index == j,
-                Some(JsonParserYieldReason::LiteralComma(j)) => single_char == "," && index == j,
-                Some(JsonParserYieldReason::LiteralPeriod(j)) => single_char == "." && index == j,
-                Some(JsonParserYieldReason::LiteralTrue(j)) => {
-                    full_str[index..].starts_with("true") && index == j
-                }
-                Some(JsonParserYieldReason::LiteralFalse(j)) => {
-                    full_str[index..].starts_with("false") && index == j
-                }
-                Some(JsonParserYieldReason::LiteralNull(j)) => {
-                    full_str[index..].starts_with("null") && index == j
-                }
-                Some(JsonParserYieldReason::LiteralSlash(j)) => single_char == "\\" && index == j,
-                Some(JsonParserYieldReason::LiteralHexEscapeChar(j)) => {
-                    single_char == "u" && index == j
-                }
-                Some(JsonParserYieldReason::RegexCharAnyExceptQuoteOrSlash(j)) => {
-                    single_char != "\"" && single_char != "\\" && index == j
-                }
-                Some(JsonParserYieldReason::RegexEscapedCharAfterSlash(j)) => {
-                    "\"\\/bfnrt".contains(single_char) && index == j
-                }
-                Some(JsonParserYieldReason::RegexCharExponent(j)) => {
-                    (single_char == "e" || single_char == "E") && index == j
-                }
-                Some(JsonParserYieldReason::RegexCharInHex(j)) => {
-                    "0123456789abcdefABCDEF".contains(single_char) && index == j
-                }
-                Some(JsonParserYieldReason::RegexCharInDigit(j)) => {
-                    "0123456789".contains(single_char) && index == j
-                }
-                Some(JsonParserYieldReason::RegexCharNumberSign(j)) => {
-                    "+-".contains(single_char) && index == j
-                }
-                Some(JsonParserYieldReason::RegexCharWhitespace(j)) => {
-                    " \t\n\r".contains(single_char) && index == j
-                }
-                _ => false,
-            })
-            .map_err(|e| format!("Internal error: {:?}", e))?;
-        let unblock_reason_lowpri = runtime
-            .check_pending_reasons(|reason| match reason {
-                Some(JsonParserYieldReason::EmptyString) => true,
-                _ => false,
-            })
-            .map_err(|e| format!("Internal error: {:?}", e))?;
+        let unblock_reason_normal = runtime.check_pending_reasons(|reason| match reason {
+            JsonParserYieldReason::LiteralArrayStart(j) => single_char == "[" && index == j,
+            JsonParserYieldReason::LiteralArrayEnd(j) => single_char == "]" && index == j,
+            JsonParserYieldReason::LiteralObjectStart(j) => single_char == "{" && index == j,
+            JsonParserYieldReason::LiteralObjectEnd(j) => single_char == "}" && index == j,
+            JsonParserYieldReason::LiteralStringStart(j) => {
+                &full_str[index..index + 1] == "\"" && index == j
+            }
+            JsonParserYieldReason::LiteralStringEnd(j) => single_char == "\"" && index == j,
+            JsonParserYieldReason::LiteralColon(j) => single_char == ":" && index == j,
+            JsonParserYieldReason::LiteralComma(j) => single_char == "," && index == j,
+            JsonParserYieldReason::LiteralPeriod(j) => single_char == "." && index == j,
+            JsonParserYieldReason::LiteralTrue(j) => {
+                full_str[index..].starts_with("true") && index == j
+            }
+            JsonParserYieldReason::LiteralFalse(j) => {
+                full_str[index..].starts_with("false") && index == j
+            }
+            JsonParserYieldReason::LiteralNull(j) => {
+                full_str[index..].starts_with("null") && index == j
+            }
+            JsonParserYieldReason::LiteralSlash(j) => single_char == "\\" && index == j,
+            JsonParserYieldReason::LiteralHexEscapeChar(j) => single_char == "u" && index == j,
+            JsonParserYieldReason::RegexCharAnyExceptQuoteOrSlash(j) => {
+                single_char != "\"" && single_char != "\\" && index == j
+            }
+            JsonParserYieldReason::RegexEscapedCharAfterSlash(j) => {
+                "\"\\/bfnrt".contains(single_char) && index == j
+            }
+            JsonParserYieldReason::RegexCharExponent(j) => {
+                (single_char == "e" || single_char == "E") && index == j
+            }
+            JsonParserYieldReason::RegexCharInHex(j) => {
+                "0123456789abcdefABCDEF".contains(single_char) && index == j
+            }
+            JsonParserYieldReason::RegexCharInDigit(j) => {
+                "0123456789".contains(single_char) && index == j
+            }
+            JsonParserYieldReason::RegexCharNumberSign(j) => {
+                "+-".contains(single_char) && index == j
+            }
+            JsonParserYieldReason::RegexCharWhitespace(j) => {
+                " \t\n\r".contains(single_char) && index == j
+            }
+            _ => false,
+        });
+        let unblock_reason_lowpri = runtime.check_pending_reasons(|reason| match reason {
+            JsonParserYieldReason::EmptyString => true,
+            _ => false,
+        });
         let unblock_reason = unblock_reason_normal.or(unblock_reason_lowpri);
 
         let Some(unblock_reason) = unblock_reason else {
@@ -602,16 +586,14 @@ where
             response,
             runtime._pending_futures_size()
         );
-        runtime
-            .unblock_futures(unblock_reason, response)
-            .map_err(|e| format!("Internal error: {:?}", e))?;
+        runtime.unblock_futures(unblock_reason, response);
     }
 }
 
 fn main() -> std::io::Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
-    let runtime = AsyncRuntime::new().unwrap();
+    let runtime = AsyncRuntime::new();
     let parser = JsonParser::new(&runtime);
     let future = parser.parse();
     let result = run_parser(&input, &parser, future).unwrap();
@@ -625,7 +607,7 @@ mod tests {
 
     #[test]
     fn test_number_parsing() {
-        let runtime = AsyncRuntime::new().unwrap();
+        let runtime = AsyncRuntime::new();
         let parser = JsonParser::new(&runtime);
         let future = parser.parse_digits();
         let result = run_parser("123", &parser, future).unwrap();
@@ -634,7 +616,7 @@ mod tests {
 
     #[test]
     fn test_string_parsing() {
-        let runtime = AsyncRuntime::new().unwrap();
+        let runtime = AsyncRuntime::new();
         let parser = JsonParser::new(&runtime);
         let future = parser.parse_string();
         let result = run_parser("\"ab\\nc\"", &parser, future).unwrap();
@@ -644,7 +626,7 @@ mod tests {
     #[test]
     fn test_string_parsing_confused_with_number() {
         // this test case might fail with parser returning String("123.") instead.
-        let runtime = AsyncRuntime::new().unwrap();
+        let runtime = AsyncRuntime::new();
         let parser = JsonParser::new(&runtime);
         let future = parser.parse();
         let result = run_parser("\"123.+917\"", &parser, future).unwrap();
@@ -653,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_fraction_parsing() {
-        let runtime = AsyncRuntime::new().unwrap();
+        let runtime = AsyncRuntime::new();
         let parser = JsonParser::new(&runtime);
         let future = parser.parse();
         let result = run_parser("-123.917", &parser, future).unwrap();
@@ -662,7 +644,7 @@ mod tests {
 
     #[test]
     fn test_member_parsing() {
-        let runtime = AsyncRuntime::new().unwrap();
+        let runtime = AsyncRuntime::new();
         let parser = JsonParser::new(&runtime);
         let future = parser.parse_member();
         let result = run_parser("  \"ab\\nc\":\"d ef\" ", &parser, future).unwrap();
@@ -674,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_object_parsing() {
-        let runtime = AsyncRuntime::new().unwrap();
+        let runtime = AsyncRuntime::new();
         let parser = JsonParser::new(&runtime);
 
         let future = parser.parse_object();
@@ -690,7 +672,7 @@ mod tests {
 
     #[test]
     fn test_array_parsing() {
-        let runtime = AsyncRuntime::new().unwrap();
+        let runtime = AsyncRuntime::new();
         let parser = JsonParser::new(&runtime);
 
         let future = parser.parse();
