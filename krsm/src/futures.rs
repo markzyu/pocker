@@ -17,7 +17,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 ///
 /// This runtime does **not** support tokio, async I/O, or external async utilities.
 ///
-/// It **only** supports parts of [futures_lite::future], including these three helper functions:
+/// It **only** supports parts of `futures_lite::future`, including these three helper functions:
 ///
 /// > `zip()`, `or()`, `poll_fn()`.
 ///
