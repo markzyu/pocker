@@ -9,24 +9,42 @@ This crate is a single-threaded, pinned, no_std async runner for futures. It's b
 Instead of providing an executor and a reactor, KRSM lets you (the downstream) define yields, perform non-blocking I/O on behalf of async functions, and take control of each individual polling step.
 
 
-```rust,ignore
-// async side: wait for various yields, tagged by reason
-let status = futures_lite::future::or(
-    runtime.new_pending_future(WaitForIOResponse),
-    runtime.new_pending_future(WaitForUserInput),
-).await?;
+```rust
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum YieldReason {
+    WaitForHttp,
+    WaitForUser
+};
 
-// sync side: you own the loop
-let mut future = your_async_fn();
-loop {
-    if let Some(result) = unsafe { runtime.run_async_step(&mut future) }? {
-        return result;
+struct YieldResponse(isize);
+
+type AsyncRuntime = krsm::AsyncRuntime::<YieldReason, YieldResponse>;
+type AsyncResult<T> = Result<T, krsm::AsyncRuntimeError>;
+
+// async side: wait for various yields, tagged by YieldReason
+async fn my_async_func(runtime: &AsyncRuntime) -> AsyncResult<isize> {
+    let val = futures_lite::future::or(
+        runtime.new_pending_future(YieldReason::WaitForHttp),
+        runtime.new_pending_future(YieldReason::WaitForUser),
+    ).await?;
+    Ok(-val.0)
+};
+
+// sync side: you own both the polling loop, and the I/O outside async
+let runtime = AsyncRuntime::new();
+let mut future = core::pin::pin!(my_async_func(&runtime));
+let result = loop {
+    if let Some(result) = runtime.run_async_step(&mut future) {
+        break result;
     }
-    if let Some(event) = check_user_input_non_blocking() {      // your I/O, outside async
-        runtime.unblock_futures(WaitForUserInput, event)?;      // resume exactly one of the many concurrent futures
+    let maybe_user_event = /* check_user_input_non_blocking() */ Some(42);
+    if let Some(event) = maybe_user_event {
+        runtime.unblock_futures(YieldReason::WaitForUser, YieldResponse(event));
         continue;
     }
-}
+};
+
+assert_eq!(result, Ok(-42));
 ```
 
 And unlike a generator, or a sans-io request/response channel, KRSM keeps several yields alive at the same time. Each one is tagged with a `YieldReason`, and the caller chooses exactly one to resume per polling step — which means KRSM allows the direct usage of `futures_lite::future::or`.
