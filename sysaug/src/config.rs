@@ -113,39 +113,30 @@ pub(crate) const PERMS_IDBIT_UG: u8 = 4;
 pub(crate) const PERMS_IDS_SIZE: usize = 8;
 
 /**
-* Check the res_bits and resf_bit of a system call and call the callback for each slot that is set.
-* @param callback: The three parameters are
-     1. register index (0 to 2, or None for regs.syscall_retval)
-     2. a mutable ref of the actual ID value to read/write (or None if no ID overrides exist)
-* @param multi_getter_is_success: True if this is a setter syscall, or if the actual getresuid/getresgid/... syscall succeeded.
-* @return true if the syscall fits a defined getid/setid pattern. (False for calls like setgroups, getgroups)
+* Check the res_bits of a system call and call the callback for each slot that is set.
+* @param callback: The parameters are
+ * The index of the register (regs.arg0-arg2) for which the bit is set.
+ * A mutable ref of the actual ID value to read/write in AsyncHandler's `perms_ids`
 */
 #[inline(always)]
-pub(crate) fn walk_resf_syscall(
+pub(crate) fn walk_res_bits(
     syscall: &SyscallInfo,
-    multi_getter_is_success: bool,
     perms_ids: &RefCell<[Option<usize>; PERMS_IDS_SIZE]>,
-    callback: impl Fn(Option<usize>, &mut Option<usize>) -> Result<(), SysAugError>,
-) -> Result<bool, SysAugError> {
+    mut callback: impl FnMut(usize, &mut Option<usize>) -> Result<(), SysAugError>,
+) -> Result<(), SysAugError> {
     let mut guard = perms_ids.borrow_mut();
-    if let Some(resf_bit) = syscall.resf_bit {
-        callback(None, &mut guard[resf_bit as usize])?;
-        return Ok(true);
-    } else if multi_getter_is_success {
-        let ug_bit = syscall.res_bits & PERMS_IDBIT_UG;
-        let res_bits = syscall.res_bits;
-        for i in 0..2 {
-            let mask = 1 << i;
-            if res_bits & mask == 0 {
-                continue;
-            }
-
-            let idx = ug_bit | (i as u8);
-            callback(Some(i), &mut guard[idx as usize])?;
+    let ug_bit = syscall.res_bits & PERMS_IDBIT_UG;
+    let res_bits = syscall.res_bits;
+    for i in 0..2 {
+        let mask = 1 << i;
+        if res_bits & mask == 0 {
+            continue;
         }
-        return Ok(true);
+
+        let idx = ug_bit | (i as u8);
+        callback(i, &mut guard[idx as usize])?;
     }
-    Ok(false)
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]

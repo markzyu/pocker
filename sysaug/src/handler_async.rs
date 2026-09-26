@@ -12,8 +12,8 @@
 
 use crate::common::{
     Augments, NO_MOD_SYSCALL, PR_SET_NO_NEW_PRIVS, PTRACE_EVENT_SECCOMP, SECCOMP_FILTER_FLAG_TSYNC,
-    SECCOMP_SET_MODE_FILTER, SYS_MMAP, SYS_MMAP_PGOFFSET_BLOCK, SysAugError, display_err,
-    rwlock_read,
+    SECCOMP_SET_MODE_FILTER, SI_CODE_SYS_SECCOMP, SYS_MMAP, SYS_MMAP_PGOFFSET_BLOCK, SysAugError,
+    display_err, rwlock_read,
 };
 use crate::config::PERMS_IDS_SIZE;
 use crate::handler_sync::{TraceeHandler, TraceeHandlerConsts};
@@ -312,21 +312,46 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     }
                 }
             }
-            if signal == Signal::SIGSYS && self.consts.args.fix_sigsys {
-                // Android sometimes kills a process for using privileged syscalls like sysinfo()
-                // Instead of killing tracee, return -ENOSYS and let it resume
+            if signal == Signal::SIGSYS {
+                // Android sometimes kills a process for using privileged syscalls
+                // Instead of killing tracee, set retval to -ENOSYS
                 let siginfo = getsig_ans.map_err(SysAugError::PtraceGetSigInfo2)?;
                 let mut regs = self.ptrace_client.execute(move || getregs(pid))??;
-                if siginfo.si_code > 0 {
+                let is_seccomp = siginfo.si_code == SI_CODE_SYS_SECCOMP;
+                let is_fix_sigsys = self.consts.args.fix_sigsys && siginfo.si_code > 0;
+                if is_seccomp || is_fix_sigsys {
                     // Signal was sent by kernel, so it's safe to assume a syscall just happened.
-                    let retval = (-libc::ENOSYS) as usize;
 
-                    // TODO: This is bad for security. OTher processes can replace register by running
+                    // TODO: This is bad for security. Other processes can replace register by running
                     //              kill -NOSYS <tracee pid>
                     event!(
                         Level::WARN,
                         "blocking SIGSYS and returning ENOSYS instead (UNSAFE)",
                     );
+
+                    // If we got this due to SECCOMP, let Augments handle the sysexit event
+                    // (Note: we can't yield to the other loops here, because this sysexit is unexpected)
+                    if is_seccomp {
+                        let syscall_num = regs.syscall_num;
+                        let (syscall_info, _) = get_syscall(&syscall_num);
+                        let which_aug = syscall_info.map(|x| &x.augment);
+                        event!(
+                            Level::WARN,
+                            "SECCOMP SIGSYS handler, special sysexit for Augment {:?} ({})",
+                            &which_aug,
+                            syscall_num
+                        );
+                        if Some(&Augments::Perms) == which_aug {
+                            let skip = self.do_sysenter_perms(&regs, syscall_info.unwrap())?;
+                            if let Some(retval) = skip {
+                                regs.set_syscall_retval(retval);
+                                self.ptrace_client.execute(move || setregs(pid, regs))??;
+                            } else {
+                                self.do_sysexit_perms(regs.clone(), syscall_info.unwrap())?;
+                            }
+                        }
+                        continue;
+                    }
 
                     // If we were trying to override a syscall, follow that override.
                     if regs.syscall_num == NO_MOD_SYSCALL {
@@ -335,6 +360,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     }
 
                     // Otherwise, override return value to -ENOSYS
+                    let retval = (-libc::ENOSYS) as usize;
                     regs.set_syscall_retval(retval);
                     self.ptrace_client.execute(move || setregs(pid, regs))??;
 
