@@ -10,17 +10,19 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 ///
 /// Type Parameters:
 ///
-/// * YieldReason: This must be a fieldless enum that derivces Copy, Eq, PartialEq, Ord, PartialOrd
-/// * YieldResponse: This can be any Rust struct that derives PartialEq
+/// * `YieldReason`: This must be an Enum that derivces [Copy], [Eq], and [Ord]
+/// * `YieldResponse`: This should be an Enum with similar variants to `YieldReason`.
+///    But it doesn't have to derive the same traits.
+/// * `MAX_PENDING`: See the "Caveat 2" section of this crate's README doc
 ///
-/// This runtime does not support tokio, async I/O, or external async utilities.
+/// This runtime does **not** support tokio, async I/O, or external async utilities.
 ///
-/// It only supports parts of futures_lite, these three helper functions:
+/// It **only** supports parts of [futures_lite::future], including these three helper functions:
 ///
 /// > `zip()`, `or()`, `poll_fn()`.
 ///
-/// It especially does not support any invocation of the Waker. If you await on
-/// an external async function which tries to access the Waker, the runtime
+/// It especially does not support any invocation of the [Waker]. If you await on
+/// an external async function which tries to access the [Waker], the runtime
 /// **will panic**.
 ///
 /// The use of `async` is purely to avoid writing a state machine switch-case.
@@ -35,7 +37,7 @@ pub struct AsyncRuntime<
     pub(crate) pending_futures: FixedSizedMap<YieldReason, usize, MAX_PENDING>,
 }
 
-/// AsyncYield is a helper for KRSM async loops.
+/// AsyncYield is a helper for concurrent loops in async.
 ///
 /// This is useful when your async future contains two or more competing loops:
 ///      `futures_lite::or(loop1, loop2).await`
@@ -86,6 +88,16 @@ const RAW_WAKER_WITH_ASSERTIONS: RawWaker = {
 impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
     AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>
 {
+    /// Creates a new Async Runtime.
+    /// This function returns a Result but currently has no error case.
+    pub fn new() -> Self {
+        Self {
+            has_unblock: RefCell::new(None),
+            has_new_future: AtomicBool::default(),
+            pending_futures: FixedSizedMap::new(),
+        }
+    }
+
     /// Create a new instance of pending future.
     ///
     /// Your async code should have access to this method. This is the **primary method**
@@ -109,27 +121,8 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
 
     /// This method is not meant to be called from within async.
     ///
-    /// The caller of async runtime uses this to unblock the futures that caused the async step to yield.
-    /// Must call this at least once between run_async_step calls
-    pub fn unblock_futures(&self, future_type: YieldReason, status: YieldResponse) {
-        let has_unblock = { self.has_unblock.borrow().is_some() };
-        if has_unblock {
-            panic!("Unblocking more than one future in a single async step is disallowed");
-        }
-
-        self.has_unblock.borrow_mut().replace((future_type, status));
-    }
-
-    /// This method is not meant to be called from within async.
-    ///
-    /// This is a debugging and profiling utility meant to help the downstream programmer
-    /// measure how large MAX_PENDING should be, in order to create a large enough, but
-    /// finite, state machine, for their use cases.
-    pub fn _pending_futures_size(&self) -> usize {
-        self.pending_futures.len()
-    }
-
-    /// This method is not meant to be called from within async.
+    /// Your synchronous side of the code should have access to this method. It is the
+    /// **primary method** to run your async program.
     ///
     /// Returns: None if the future is still incomplete, and has yielded.
     ///          Some(async result) if the future has finished running.
@@ -148,28 +141,34 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
         result
     }
 
+    /// This method is not meant to be called from within async.
+    ///
+    /// Your synchronous side of the code uses this to unblock the futures that caused
+    /// the async step to yield.
+    ///
+    /// You must call this exactly once between `run_async_step()` calls
+    pub fn unblock_futures(&self, future_type: YieldReason, status: YieldResponse) {
+        let has_unblock = { self.has_unblock.borrow().is_some() };
+        if has_unblock {
+            panic!("Unblocking more than one future in a single async step is disallowed");
+        }
+
+        self.has_unblock.borrow_mut().replace((future_type, status));
+    }
+
     /// This is a function used for unit testing only. It doesn't actually reflect all blockages.
     /// For example, AsyncYield's pending status won't be reflected here.
     fn _has_new_blockage(&self) -> bool {
         self.has_new_future.load(Ordering::Relaxed)
     }
 
-    /// Creates a new Async Runtime.
-    /// This function returns a Result but currently has no error case.
-    pub fn new() -> Self {
-        Self {
-            has_unblock: RefCell::new(None),
-            has_new_future: AtomicBool::default(),
-            pending_futures: FixedSizedMap::new(),
-        }
-    }
-
     /// This method is not meant to be called from within async.
+    ///
     /// It's meant to help the caller of async runtime find out how to unblock the futures
     ///
-    /// The func callback can short circuit and end iteration early by returning true.
+    /// The `func` callback can short circuit and end iteration early by returning true.
     ///
-    /// Returns: The item that `func` returned true for. (None otherwise)
+    /// Returns: `Some(item)` that the `func` returned true for. `None` otherwise.
     pub fn check_pending_reasons<F>(&self, mut func: F) -> Option<YieldReason>
     where
         F: FnMut(YieldReason) -> bool,
@@ -178,6 +177,15 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
             .pending_futures
             .find(|x| x.map(|v| func(v.0)) == Some(true), |(k, _)| *k);
         result
+    }
+
+    /// This method is not meant to be called from within async.
+    ///
+    /// This is a debugging and profiling utility meant to help the downstream programmer
+    /// measure how large `MAX_PENDING` should be, in order to create a large enough, but
+    /// finite, state machine, for their use cases.
+    pub fn _pending_futures_size(&self) -> usize {
+        self.pending_futures.len()
     }
 }
 
