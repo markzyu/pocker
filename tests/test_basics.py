@@ -73,7 +73,15 @@ class TestBasics(t.TestCase):
         self.assertEqual(parts[0], b"uid=0(root)")
         self.assertEqual(parts[1], b"gid=0(root)")
 
-    def test_setuid_neg1(self):
+    def test_setuid(self):
+        # Set uid to 0.
+        for run_method in (c.run_script, c.run_elf_chroot):
+            ans = run_method(b"./tests/fixtures/07-perms-setuid-zero.out", root=True)
+            self.assertEqual(ans.returncode, 0)
+            self.assertIn(b"result: 0 errno: ", ans.stdout)
+            self.assertIn(b"newuid: 0.", ans.stdout)
+
+        # Setting uid to -1 is not allowed, so we expect EINVAL.
         for run_method in (c.run_script, c.run_elf_chroot):
             ans = run_method(b"./tests/fixtures/07-perms-setuid-neg1.out", root=True)
             EINVAL = str(errno.EINVAL).encode()
