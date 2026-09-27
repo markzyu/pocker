@@ -11,10 +11,12 @@
 // GNU General Public License for more details.
 
 use crate::common::{PermsMode, SysAugError, SyscallInfo};
-use crate::config::walk_resf_syscall;
+use crate::config::walk_res_bits;
 use crate::handler_async::AsyncTraceeHandler;
 use pocker_ptrace::GenericPurposeRegs;
 use tracing::{Level, event};
+
+const EINVAL: isize = nix::errno::Errno::EINVAL as isize;
 
 impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceClient> {
     pub async fn augment_sys_perms(
@@ -22,61 +24,100 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         orig_regs: GenericPurposeRegs,
         syscall: &SyscallInfo,
     ) -> Result<(), SysAugError> {
-        let possible_args = &[orig_regs.arg0, orig_regs.arg1, orig_regs.arg2];
-        if syscall.is_setter && self.consts.args.perms_mode != PermsMode::Passthrough {
-            let is_handled = walk_resf_syscall(syscall, true, &self.perms_ids, |i, val| {
-                let proposed_id = if let Some(i) = i {
-                    possible_args[i]
-                } else {
-                    orig_regs.syscall_retval()
-                };
-                let final_id = self.handle_setid(syscall, proposed_id)?;
-                *val = Some(final_id);
+        let should_skip = self.do_sysenter_perms(&orig_regs, syscall)?;
+        if let Some(retval) = should_skip {
+            return self.do_skip_syscall(retval).await;
+        }
+        let regs = self.do_resume_syscall().await?;
+        self.do_sysexit_perms(regs, syscall)?;
+        Ok(())
+    }
+
+    /// Returns Some(retval) if the syscall should be skipped. Returns None if it should run.
+    pub fn do_sysenter_perms(
+        &self,
+        regs: &GenericPurposeRegs,
+        syscall: &SyscallInfo,
+    ) -> Result<Option<usize>, SysAugError> {
+        let possible_args = &[regs.arg0, regs.arg1, regs.arg2];
+        if !syscall.is_setter || self.consts.args.perms_mode == PermsMode::Passthrough {
+            // Getters don't need overrides during sysenter
+            Ok(None)
+        } else if let Some(resf_bit) = syscall.resf_bit {
+            let proposed_id = regs.arg0;
+            if (proposed_id as i32) < 0 {
+                return Ok(Some((-EINVAL) as usize));
+            }
+
+            let mut guard = self.perms_ids.borrow_mut();
+            let final_id = self.handle_setid(syscall, proposed_id)?;
+            guard[resf_bit as usize] = Some(final_id);
+            Ok(Some(0))
+        } else if syscall.res_bits > 0 {
+            let mut retval: isize = 0;
+            walk_res_bits(syscall, &self.perms_ids, |i, _| {
+                let proposed_id = possible_args[i];
+                if (proposed_id as i32) < 0 {
+                    retval = -EINVAL;
+                }
                 Ok(())
             })?;
-
-            if !is_handled {
-                return self.do_skip_syscall(0).await;
-            }
+            walk_res_bits(syscall, &self.perms_ids, |i, val| {
+                if retval > 0 {
+                    let proposed_id = possible_args[i];
+                    let final_id = self.handle_setid(syscall, proposed_id)?;
+                    *val = Some(final_id);
+                }
+                Ok(())
+            })?;
+            Ok(Some(retval as usize))
+        } else {
+            Ok(None)
         }
+    }
 
-        let regs = self.do_resume_syscall().await?;
-
-        if !syscall.is_setter && self.consts.args.perms_mode != PermsMode::Passthrough {
-            let is_known_getter = walk_resf_syscall(
-                syscall,
-                regs.syscall_retval() == 0,
-                &self.perms_ids,
-                |i, val| {
-                    if let Some(i) = i {
-                        let pid = self.pid;
-                        let ptr_addr = possible_args[i];
-                        if let Some(val) = val.as_ref() {
-                            let val = *val;
-                            event!(
-                                Level::INFO,
-                                "Writing id {} to tracee pointer {:x}",
-                                val,
-                                ptr_addr
-                            );
-                            self.ptrace_client
-                                .execute(move || pocker_ptrace::write(pid, ptr_addr, val))??;
-                        }
-                    } else if let Some(val) = val.as_ref() {
+    pub fn do_sysexit_perms(
+        &self,
+        regs: GenericPurposeRegs,
+        syscall: &SyscallInfo,
+    ) -> Result<(), SysAugError> {
+        let possible_args = &[regs.arg0, regs.arg1, regs.arg2];
+        if syscall.is_setter || self.consts.args.perms_mode == PermsMode::Passthrough {
+            // Setters don't need overrides during sysexit
+        } else if let Some(resf_bit) = syscall.resf_bit {
+            let guard = self.perms_ids.borrow();
+            if let Some(val) = guard[resf_bit as usize].as_ref() {
+                event!(
+                    Level::INFO,
+                    "Writing id {} to return value of {}",
+                    *val,
+                    syscall.name()
+                );
+                self.write_retval(regs.clone(), *val)?;
+            }
+        } else if syscall.res_bits > 0 {
+            // Multi-getters could fail. And we should let them fail.
+            if regs.syscall_retval() == 0 {
+                walk_res_bits(syscall, &self.perms_ids, |i, val| {
+                    let pid = self.pid;
+                    let ptr_addr = possible_args[i];
+                    if let Some(val) = val.clone() {
                         event!(
                             Level::INFO,
-                            "Writing id {} to return value of {}",
-                            *val,
-                            syscall.name()
+                            "Writing id {} to tracee pointer {:x}",
+                            val,
+                            ptr_addr
                         );
-                        self.write_retval(regs.clone(), *val)?;
+                        self.ptrace_client
+                            .execute(move || pocker_ptrace::write(pid, ptr_addr, val))??;
                     }
                     Ok(())
-                },
-            )?;
-            if !is_known_getter && (regs.syscall_retval() as isize) < 0 {
-                // The default behavior is to let the unknown getter syscall succeed.
-                return self.write_retval(regs, 0);
+                })?;
+            }
+        } else {
+            // The default behavior is to let the unknown getter syscall succeed.
+            if (regs.syscall_retval() as isize) < 0 {
+                self.write_retval(regs, 0)?;
             }
         }
         Ok(())

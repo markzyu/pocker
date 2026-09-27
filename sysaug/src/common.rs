@@ -347,6 +347,9 @@ pub const PTRACE_SYSCALL_INFO_EXIT: u8 = 2;
 #[allow(dead_code)]
 pub const PTRACE_SYSCALL_INFO_SECCOMP: u8 = 3;
 
+#[allow(dead_code)]
+pub const SI_CODE_SYS_SECCOMP: libc::c_int = 1;
+
 #[cfg(not(target_arch = "arm"))]
 pub const SYS_MMAP: usize = libc::SYS_mmap as usize;
 #[cfg(target_arch = "arm")]
