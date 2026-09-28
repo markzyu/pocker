@@ -1400,6 +1400,7 @@ dependencies = [
  "clap",
  "flate2",
  "oci-client",
+ "oci-spec",
  "pocker-executor",
  "pocker-procfs",
  "pocker-ptrace",

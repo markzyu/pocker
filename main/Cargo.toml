@@ -39,3 +39,4 @@ tracing = "0.1.26"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3.6", features = ["env-filter"] } 
 webpki-root-certs = "1.0"
+oci-spec = "0.10.0"

@@ -14,7 +14,11 @@ use anyhow::{Context, bail};
 use bytes::Buf;
 use clap::{Args, Parser, Subcommand};
 use flate2::read::GzDecoder;
-use oci_client::client::{Certificate, CertificateEncoding};
+use oci_client::{
+    client::{Certificate, CertificateEncoding},
+    manifest::ImageIndexEntry,
+};
+use oci_spec::image::{Arch, Os};
 use pocker::{CLIError, LaunchOptions, canonicalize_clone, init_logging, launch_ptrace};
 use pocker_sysaug::{PermsMode, RAW_SYSCALL_INFOS, SysAugArgs};
 use std::io::Write;
@@ -135,8 +139,21 @@ fn get_oci_client() -> oci_client::Client {
 
     oci_client::Client::new(oci_client::client::ClientConfig {
         tls_certs_only: certs,
+        platform_resolver: Some(Box::new(resolver_for_linux)),
         ..Default::default()
     })
+}
+
+/// Tell oci_client we are on Linux, even if it thinks that we are Android
+fn resolver_for_linux(manifests: &[ImageIndexEntry]) -> Option<String> {
+    manifests
+        .iter()
+        .find(|entry| {
+            entry.platform.as_ref().is_some_and(|platform| {
+                platform.os == Os::Linux && platform.architecture == Arch::default()
+            })
+        })
+        .map(|entry| entry.digest.clone())
 }
 
 fn download_image(
