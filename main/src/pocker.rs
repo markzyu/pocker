@@ -10,11 +10,15 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
+use bytes::Buf;
 use clap::{Args, Parser, Subcommand};
+use flate2::read::GzDecoder;
 use pocker::{CLIError, LaunchOptions, canonicalize_clone, init_logging, launch_ptrace};
 use pocker_sysaug::{PermsMode, RAW_SYSCALL_INFOS, SysAugArgs, display_err};
 use std::path::PathBuf;
 use tracing::{Level, event};
+
+const LAYER_TYPE_TAR_GZ: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
 
 #[derive(Parser, Debug)]
 #[command(version = "0.2.0", author = "Zhongzhi Yu")]
@@ -107,7 +111,7 @@ fn download_image(name: String, args: &ImageDownloadArgs) -> Result<PathBuf, CLI
         .unwrap();
 
     // 2. Execute the future, blocking the current thread until completion
-    let pathbuf: Result<PathBuf, CLIError> = rt.block_on(async {
+    let image: Result<_, CLIError> = rt.block_on(async {
         let client = oci_client::Client::default();
         let reference_str = format!(
             "{}/{}/{}",
@@ -116,11 +120,20 @@ fn download_image(name: String, args: &ImageDownloadArgs) -> Result<PathBuf, CLI
         let reference: oci_client::Reference = reference_str.parse().unwrap();
         let auth = oci_client::secrets::RegistryAuth::Anonymous;
         let image = client
-            .pull(&reference, &auth, vec![])
+            .pull(&reference, &auth, vec![LAYER_TYPE_TAR_GZ])
             .await
             .map_err(CLIError::OciPull)?;
-        println!("{:?}", image.layers);
-        Ok(PathBuf::new())
+        Ok(image)
     });
-    Ok(pathbuf?)
+    let image = image?;
+
+    for layer in image.layers {
+        let mut gz = GzDecoder::new(layer.data.reader());
+        let mut tar = tar::Archive::new(&mut gz);
+        for entry in tar.entries().unwrap() {
+            println!("{:?}", entry.unwrap().path());
+        }
+    }
+
+    Ok(PathBuf::new())
 }
