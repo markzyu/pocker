@@ -10,12 +10,13 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use bytes::Buf;
 use clap::{Args, Parser, Subcommand};
 use flate2::read::GzDecoder;
 use pocker::{CLIError, LaunchOptions, canonicalize_clone, init_logging, launch_ptrace};
-use pocker_sysaug::{PermsMode, RAW_SYSCALL_INFOS, SysAugArgs, display_err};
+use pocker_sysaug::{PermsMode, RAW_SYSCALL_INFOS, SysAugArgs};
+use std::io::Write;
 use std::path::PathBuf;
 use tracing::{Level, event};
 
@@ -35,6 +36,9 @@ enum Commands {
     Run {
         /// The name of the container image
         image: String,
+
+        /// An optional command to run. This defaults to /bin/sh, for now, not the one specified in the image.
+        cmd: Option<String>,
 
         /// Give a different name to this instance of the container
         #[arg(long)]
@@ -75,59 +79,54 @@ struct ImageDownloadArgs {
     registry_namespace: String,
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
+    // Initialize, parse args
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to initialize ring as the TLS provider");
-    actual_main().map_err(display_err).unwrap();
-}
-
-fn actual_main() -> anyhow::Result<()> {
-    // Initialize, parse args
     let _guard = init_logging();
     let args = CLIArgs::parse();
     match args.commands {
         Commands::Run {
             image,
+            cmd,
             launch,
             name,
             download,
         } => {
-            download_image(image, name, download)?;
+            event!(Level::INFO, "Downloading image...");
+            let (instance, layers) = download_image(image, name, download)?;
+
+            event!(Level::INFO, "Creating instance...");
+            std::fs::create_dir_all(&instance).context("Failed to create instance dir")?;
+            let lockfile = instance.join(LOCKFILE_RUNNING);
+            {
+                let mut file =
+                    std::fs::File::create(&lockfile).context("Failed to lock instance")?;
+                writeln!(file, "")?;
+            }
+
+            event!(Level::INFO, "Running instance...");
+            let cmd = cmd.unwrap_or("/bin/sh".to_string());
+            let result = run_instance(cmd, &launch, instance, layers);
+
+            event!(Level::INFO, "Cleaning up...");
+            std::fs::remove_file(&lockfile).context("Failed to unlock instance")?;
+
+            let retcode = result?;
+            event!(Level::INFO, "Done.");
+            std::process::exit(retcode.unwrap() as i32);
         }
     }
-
-    /*
-    let launch_args = &args.launch;
-    let chroot_copy = canonicalize_clone(&args.chroot)?;
-    let args2 = SysAugArgs {
-        chroot: canonicalize_clone(&args.chroot)?,
-        rootfs: canonicalize_clone(&args.rootfs)?.or_else(|| chroot_copy),
-        perms_mode: if args.root {
-            PermsMode::RootOnly
-        } else if args.sudo {
-            PermsMode::SudoOnly
-        } else {
-            PermsMode::Passthrough
-        },
-        fail_fast: launch_args.fail_fast,
-        fix_sigsys: launch_args.fix_sigsys,
-        fix_mmap: launch_args.fix_mmap || launch_args.fix_attach,
-        gdb: launch_args.gdb,
-        gdb_at: launch_args.gdb_at,
-        use_native_loader: launch_args.use_native_loader,
-    };
-
-    let retcode = launch_ptrace(args2, &args.cmd, launch_args.fix_attach)?;
-    event!(Level::INFO, "Done. (all tracees exited)");
-    std::process::exit(retcode.unwrap() as i32);
-    */
-    Ok(())
 }
 
 type InstanceAndLayers = (PathBuf, Vec<PathBuf>);
 
-fn download_image(image_name: String, instance_name: Option<String>, args: ImageDownloadArgs) -> anyhow::Result<InstanceAndLayers> {
+fn download_image(
+    image_name: String,
+    instance_name: Option<String>,
+    args: ImageDownloadArgs,
+) -> anyhow::Result<InstanceAndLayers> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all() // Enables both the I/O driver and the time driver
         .build()?;
@@ -159,8 +158,13 @@ fn download_image(image_name: String, instance_name: Option<String>, args: Image
     let instance_name = instance_name.unwrap_or(image_name);
     let instance = instances_dir.join(&instance_name);
     let instance_running = instances_dir.join(LOCKFILE_RUNNING);
+
+    std::fs::create_dir_all(&instances_dir)?;
     if instance_running.exists() {
-        bail!("Refusing to overwrite an existing, running instance: {}", &instance_name);
+        bail!(
+            "Refusing to overwrite an existing, running instance: {}",
+            &instance_name
+        );
     }
 
     let mut layer_dirs: Vec<PathBuf> = Vec::new();
@@ -185,4 +189,29 @@ fn download_image(image_name: String, instance_name: Option<String>, args: Image
     }
 
     Ok((instance, layer_dirs))
+}
+
+fn run_instance(
+    cmd: String,
+    args: &LaunchOptions,
+    instance: PathBuf,
+    layers: Vec<PathBuf>,
+) -> anyhow::Result<Option<u8>> {
+    let instance = instance.canonicalize()?;
+    let args2 = SysAugArgs {
+        chroot: Some(instance.clone()),
+        rootfs: Some(instance),
+        perms_mode: PermsMode::RootOnly,
+        fail_fast: args.fail_fast,
+        fix_sigsys: args.fix_sigsys,
+        fix_mmap: args.fix_mmap || args.fix_attach,
+        gdb: args.gdb,
+        gdb_at: args.gdb_at,
+        use_native_loader: args.use_native_loader,
+    };
+
+    match launch_ptrace(args2, &cmd, args.fix_attach) {
+        Err(e) => bail!("Error: {:?}", e),
+        Ok(ans) => Ok(ans),
+    }
 }
