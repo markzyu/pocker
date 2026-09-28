@@ -41,6 +41,9 @@ pub enum CLIError {
 
     #[error("Unable to pull image: {0:?}")]
     OciPull(oci_client::errors::OciDistributionError),
+
+    #[error("Unknown image format: {0}")]
+    OciImageFormat(String),
 }
 
 #[derive(Args, Clone, Debug)]
