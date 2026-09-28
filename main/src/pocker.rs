@@ -11,12 +11,9 @@
 // GNU General Public License for more details.
 
 use clap::Parser;
-use pocker_executor::PtraceServer;
+use pocker::{CLIError, LaunchOptions, canonicalize_clone, launch_ptrace};
 use pocker_sysaug::{PermsMode, RAW_SYSCALL_INFOS, SysAugArgs, display_err};
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::thread;
-use thiserror::Error;
 use tracing::{Level, event};
 
 #[derive(Parser, Debug)]
@@ -29,20 +26,6 @@ pub struct CLIArgs {
     /// Chroot to this path upon tracee startup. Implies --rootfs
     #[arg(long)]
     pub chroot: Option<PathBuf>,
-
-    /// Only use this flag if you see "PTRACE_ATTACH error: EPERM: Permission denied".
-    /// This will solve those permission errors, but will also cause slowdowns.
-    /// (implies --fix-mmap)
-    #[arg(long)]
-    pub fix_attach: bool,
-
-    /// If your tracee crashes due to SIGSYS, use this flag.
-    #[arg(long)]
-    pub fix_sigsys: bool,
-
-    /// If your kernel is older than v3.17, then please use this flag to avoid mmap errors
-    #[arg(long)]
-    pub fix_mmap: bool,
 
     /// Make your applications think they are root when they are not.
     #[arg(long)]
@@ -64,42 +47,8 @@ pub struct CLIArgs {
     #[arg(long, default_value = "bash")]
     pub cmd: String,
 
-    /// Quit as soon as any application fails
-    #[arg(long)]
-    pub fail_fast: bool,
-
-    /// Try to attach GDB to applications that crashed
-    #[arg(long)]
-    pub gdb: bool,
-
-    /// Attach GDB after X number of system calls
-    #[arg(long)]
-    pub gdb_at: Option<u64>,
-
-    /// Use the host ld.so instead of the one from the chroot environment
-    #[arg(long)]
-    pub use_native_loader: bool,
-}
-
-#[derive(Debug, Error)]
-pub enum CLIError {
-    #[error("Unexpected internal error from ptrace() executor: {0}")]
-    InternalExecutor(#[from] pocker_executor::PtraceExecutorError),
-
-    #[error("Ptrace error: {0}")]
-    Ptrace(#[from] pocker_ptrace::PtraceError),
-
-    #[error("Syscall error: {0}")]
-    SysAugErr(#[from] pocker_sysaug::SysAugError),
-
-    #[error("Invalid command line arguments: {0}")]
-    ParseArgs(String),
-
-    #[error("Unable to complete")]
-    UnableToComplete,
-
-    #[error("Unable to find the absolute path of {0:?}: {1}")]
-    PathCanonicalization(PathBuf, std::io::Error),
+    #[command(flatten)]
+    pub launch: LaunchOptions,
 }
 
 fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
@@ -150,46 +99,8 @@ fn actual_main() -> Result<(), CLIError> {
         return Ok(());
     }
 
-    let retcode = if args.fix_attach {
-        let (ptrace_client, ptrace_loop) = pocker_executor::new_main_thread_executor();
-        let join = launch_ptrace(&args, ptrace_client)?;
-        ptrace_loop.serve()?;
-        join.join().map_err(|_| CLIError::UnableToComplete)?
-    } else {
-        launch_ptrace(&args, pocker_executor::new_local_executor())?
-            .join()
-            .map_err(|_| CLIError::UnableToComplete)?
-    };
-
-    event!(Level::INFO, "Done. (all tracees exited)");
-    std::process::exit(retcode.unwrap() as i32);
-}
-
-fn canonicalize_clone(maybe_path: &Option<PathBuf>) -> Result<Option<PathBuf>, CLIError> {
-    if let Some(path) = maybe_path {
-        match path.canonicalize() {
-            Ok(new_path) => Ok(Some(new_path)),
-            Err(e) => Err(CLIError::PathCanonicalization(path.clone(), e)),
-        }
-    } else {
-        Ok(None)
-    }
-}
-
-fn launch_ptrace<PtraceClient: pocker_executor::PtraceClient>(
-    args: &CLIArgs,
-    ptrace_client: PtraceClient,
-) -> Result<thread::JoinHandle<Option<u8>>, CLIError> {
-    // Spawn first tracee
-    let (pid1, shared_fd, mmap_addr) = {
-        let mut cmd = std::process::Command::new(&args.cmd);
-        pocker_ptrace::start(&mut cmd, args.fix_attach)?
-    };
-    event!(Level::INFO, "First tracee pid: {:?}", pid1);
-
+    let launch_args = &args.launch;
     let chroot_copy = canonicalize_clone(&args.chroot)?;
-
-    // Setup tracee handler states
     let args2 = SysAugArgs {
         chroot: canonicalize_clone(&args.chroot)?,
         rootfs: canonicalize_clone(&args.rootfs)?.or_else(|| chroot_copy),
@@ -200,28 +111,15 @@ fn launch_ptrace<PtraceClient: pocker_executor::PtraceClient>(
         } else {
             PermsMode::Passthrough
         },
-        fail_fast: args.fail_fast,
-        fix_sigsys: args.fix_sigsys,
-        fix_mmap: args.fix_mmap || args.fix_attach,
-        gdb: args.gdb,
-        gdb_at: args.gdb_at,
-        use_native_loader: args.use_native_loader,
-    };
-    let states = pocker_sysaug::TraceeHandlerConsts {
-        args: args2,
-        root_pid: pid1,
-        ..Default::default()
+        fail_fast: launch_args.fail_fast,
+        fix_sigsys: launch_args.fix_sigsys,
+        fix_mmap: launch_args.fix_mmap || launch_args.fix_attach,
+        gdb: launch_args.gdb,
+        gdb_at: launch_args.gdb_at,
+        use_native_loader: launch_args.use_native_loader,
     };
 
-    // Start tracee handler thread
-    let ptrace_client2 = ptrace_client.clone();
-    let new_tracee_handler = pocker_sysaug::TraceeHandler::new(
-        pid1,
-        ptrace_client,
-        Some(Arc::new(states)),
-        None,
-        shared_fd,
-        mmap_addr,
-    )?;
-    Ok(new_tracee_handler.start(move || ptrace_client2.stop()))
+    let retcode = launch_ptrace(args2, &args.cmd, launch_args.fix_attach)?;
+    event!(Level::INFO, "Done. (all tracees exited)");
+    std::process::exit(retcode.unwrap() as i32);
 }

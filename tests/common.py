@@ -79,7 +79,7 @@ def run_elf_chroot(elf_path, timeout=7, stderr=None, **kwargs):
 
 def _get_cmd(root=False, rootfs=False, chroot=False):
     args = [
-        "target/debug/pocker",
+        "target/debug/pocker-runtime",
         "--root" if root else "",
         "--chroot" if chroot else "--rootfs" if rootfs else "",
         STAGING if (chroot or rootfs) else "",

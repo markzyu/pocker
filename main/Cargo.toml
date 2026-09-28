@@ -7,6 +7,14 @@ repository = "https://github.com/markzyu/pocker"
 license = "GPL-3.0-or-later"
 edition = "2024"
 
+[[bin]]
+name = "pocker"
+path = "src/pocker.rs"
+
+[[bin]]
+name = "pocker-runtime"
+path = "src/runtime.rs"
+
 [lints]
 workspace = true
 
