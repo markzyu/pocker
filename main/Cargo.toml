@@ -26,7 +26,10 @@ pocker-procfs = {path = "../procfs", version = "0.2"}
 pocker-ptrace = {path = "../ptrace", version = "0.2"}
 pocker-sysaug = {path = "../sysaug", version = "0.2"}
 clap = { version = "4", features = ["derive"] }
+oci-client = { version = "0.18.0", default-features = false, features = ["rustls-tls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 thiserror = "1.0.25"
+tokio = { version = "1.53.1", default-features = false, features = ["rt"] }
 tracing = "0.1.26"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3.6", features = ["env-filter"] } 

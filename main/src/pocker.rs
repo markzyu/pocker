@@ -10,7 +10,7 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use pocker::{CLIError, LaunchOptions, canonicalize_clone, init_logging, launch_ptrace};
 use pocker_sysaug::{PermsMode, RAW_SYSCALL_INFOS, SysAugArgs, display_err};
 use std::path::PathBuf;
@@ -18,40 +18,43 @@ use tracing::{Level, event};
 
 #[derive(Parser, Debug)]
 #[command(version = "0.2.0", author = "Zhongzhi Yu")]
-pub struct CLIArgs {
-    /// Trace syscalls like strace (slow). Not all syscalls are supported.
+struct CLIArgs {
+    #[command(subcommand)]
+    commands: Commands,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+enum Commands {
+    /// Download and run a container from image name
+    Run {
+        /// The name of the container image
+        image_name: String,
+
+        #[command(flatten)]
+        launch: LaunchOptions,
+
+        #[command(flatten)]
+        download_args: ImageDownloadArgs,
+    },
+}
+
+#[derive(Args, Clone, Debug)]
+struct ImageDownloadArgs {
+    /// Where to put the runtime rootfs for the container. Default is ./<image name>
     #[arg(long)]
-    pub strace: bool,
+    container_path: Option<PathBuf>,
 
-    /// Chroot to this path upon tracee startup. Implies --rootfs
-    #[arg(long)]
-    pub chroot: Option<PathBuf>,
+    #[arg(long, default_value_t = "docker.io".to_string())]
+    registry_host: String,
 
-    /// Make your applications think they are root when they are not.
-    #[arg(long)]
-    pub root: bool,
-
-    /// You probably want --chroot instead. This simulates rootfs without chroot, for files in this folder.
-    #[arg(long)]
-    pub rootfs: Option<PathBuf>,
-
-    /// Make your applications think they can sudo when they cannot. Not compatible with --root
-    #[arg(long)]
-    pub sudo: bool,
-
-    /// Do not start a pocker container. Instead, print the list of known syscalls
-    #[arg(long)]
-    pub show_syscalls: bool,
-
-    /// Override the command to execute
-    #[arg(long, default_value = "bash")]
-    pub cmd: String,
-
-    #[command(flatten)]
-    pub launch: LaunchOptions,
+    #[arg(long, default_value_t = "library".to_string())]
+    registry_namespace: String,
 }
 
 fn main() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install ring crypto provider");
     actual_main().map_err(display_err).unwrap();
 }
 
@@ -59,25 +62,17 @@ fn actual_main() -> Result<(), CLIError> {
     // Initialize, parse args
     let _guard = init_logging();
     let args = CLIArgs::parse();
-
-    if args.show_syscalls {
-        for maybe_syscall in RAW_SYSCALL_INFOS.iter() {
-            if let Some(syscall) = maybe_syscall {
-                println!("{}: {:?}", syscall.name, syscall);
-            }
+    match args.commands {
+        Commands::Run {
+            image_name,
+            launch,
+            download_args,
+        } => {
+            download_image(image_name, &download_args)?;
         }
-        return Ok(());
     }
 
-    if args.root && args.sudo {
-        event!(Level::ERROR, "You cannot use both --root and --sudo");
-        return Ok(());
-    }
-    if args.chroot.is_some() && args.rootfs.is_some() {
-        event!(Level::ERROR, "You cannot use both --chroot and --rootfs");
-        return Ok(());
-    }
-
+    /*
     let launch_args = &args.launch;
     let chroot_copy = canonicalize_clone(&args.chroot)?;
     let args2 = SysAugArgs {
@@ -101,4 +96,31 @@ fn actual_main() -> Result<(), CLIError> {
     let retcode = launch_ptrace(args2, &args.cmd, launch_args.fix_attach)?;
     event!(Level::INFO, "Done. (all tracees exited)");
     std::process::exit(retcode.unwrap() as i32);
+    */
+    Ok(())
+}
+
+fn download_image(name: String, args: &ImageDownloadArgs) -> Result<PathBuf, CLIError> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all() // Enables both the I/O driver and the time driver
+        .build()
+        .unwrap();
+
+    // 2. Execute the future, blocking the current thread until completion
+    let pathbuf: Result<PathBuf, CLIError> = rt.block_on(async {
+        let client = oci_client::Client::default();
+        let reference_str = format!(
+            "{}/{}/{}",
+            args.registry_host, args.registry_namespace, name
+        );
+        let reference: oci_client::Reference = reference_str.parse().unwrap();
+        let auth = oci_client::secrets::RegistryAuth::Anonymous;
+        let image = client
+            .pull(&reference, &auth, vec![])
+            .await
+            .map_err(CLIError::OciPull)?;
+        println!("{:?}", image.layers);
+        Ok(PathBuf::new())
+    });
+    Ok(pathbuf?)
 }

@@ -38,9 +38,12 @@ pub enum CLIError {
 
     #[error("Unable to find the absolute path of {0:?}: {1}")]
     PathCanonicalization(PathBuf, std::io::Error),
+
+    #[error("Unable to pull image: {0:?}")]
+    OciPull(oci_client::errors::OciDistributionError),
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Clone, Debug)]
 #[group(required = false, multiple = true)]
 /// These options are reused in any command that launches containers
 pub struct LaunchOptions {
