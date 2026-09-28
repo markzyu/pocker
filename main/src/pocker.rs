@@ -14,11 +14,13 @@ use anyhow::{Context, bail};
 use bytes::Buf;
 use clap::{Args, Parser, Subcommand};
 use flate2::read::GzDecoder;
+use oci_client::client::{Certificate, CertificateEncoding};
 use pocker::{CLIError, LaunchOptions, canonicalize_clone, init_logging, launch_ptrace};
 use pocker_sysaug::{PermsMode, RAW_SYSCALL_INFOS, SysAugArgs};
 use std::io::Write;
 use std::path::PathBuf;
 use tracing::{Level, event};
+use webpki_root_certs::TLS_SERVER_ROOT_CERTS;
 
 const LAYER_TYPE_TAR_GZ: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
 const LOCKFILE_RUNNING: &str = ".pocker-running";
@@ -122,6 +124,21 @@ fn main() -> anyhow::Result<()> {
 
 type InstanceAndLayers = (PathBuf, Vec<PathBuf>);
 
+fn get_oci_client() -> oci_client::Client {
+    let certs: Vec<_> = TLS_SERVER_ROOT_CERTS
+        .iter()
+        .map(|item| Certificate {
+            encoding: CertificateEncoding::Der,
+            data: Vec::from(item.as_ref()),
+        })
+        .collect();
+
+    oci_client::Client::new(oci_client::client::ClientConfig {
+        tls_certs_only: certs,
+        ..Default::default()
+    })
+}
+
 fn download_image(
     image_name: String,
     instance_name: Option<String>,
@@ -133,7 +150,7 @@ fn download_image(
 
     // 2. Execute the future, blocking the current thread until completion
     let image: anyhow::Result<_> = rt.block_on(async {
-        let client = oci_client::Client::default();
+        let client = get_oci_client();
         let reference_str = format!(
             "{}/{}/{}",
             args.registry_host, args.registry_namespace, &image_name
