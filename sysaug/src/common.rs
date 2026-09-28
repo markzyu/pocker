@@ -167,6 +167,7 @@ pub struct SysAugArgs {
     pub fail_fast: bool,
     pub fix_sigsys: bool,
     pub fix_mmap: bool,
+    pub no_seccomp: bool,
     pub gdb: bool,
     pub gdb_at: Option<u64>,
 

@@ -35,7 +35,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock, Weak};
 use sys::signal::Signal;
-use tracing::{Level, event, info, span};
+use tracing::{Level, event, info};
 
 thread_local! {
     static MEM: RefCell<MemHelpers> = const { RefCell::new(MemHelpers { ..SLOW_MEM_HELPERS }) };
@@ -317,7 +317,8 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 // Instead of killing tracee, set retval to -ENOSYS
                 let siginfo = getsig_ans.map_err(SysAugError::PtraceGetSigInfo2)?;
                 let mut regs = self.ptrace_client.execute(move || getregs(pid))??;
-                let is_seccomp = siginfo.si_code == SI_CODE_SYS_SECCOMP;
+                let is_seccomp =
+                    !self.consts.args.no_seccomp && siginfo.si_code == SI_CODE_SYS_SECCOMP;
                 let is_fix_sigsys = self.consts.args.fix_sigsys && siginfo.si_code > 0;
                 if is_seccomp || is_fix_sigsys {
                     // Signal was sent by kernel, so it's safe to assume a syscall just happened.
@@ -488,10 +489,9 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let regs = self.ptrace_client.execute(move || getregs(pid))??;
             let (maybe_syscall_info, syscall_name) = get_syscall(&regs.syscall_num);
             let which_aug = maybe_syscall_info.map(|x| &x.augment);
-            let _span1 = span!(
+            event!(
                 Level::DEBUG,
-                "syscall",
-                "{:?} syscall {} id {} args {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}",
+                "SYSCALL ENTRY: augment {:?} syscall {} id {} args {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}",
                 which_aug.unwrap_or(&Augments::None),
                 syscall_name,
                 total_times,
@@ -501,8 +501,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 regs.arg3,
                 regs.arg4,
                 regs.arg5
-            )
-            .entered();
+            );
             event!(
                 Level::TRACE,
                 "syscall entry event, stack@{:x}",
@@ -523,7 +522,8 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             // AFTER System Call Entry:
             // Update tracee_seccomp_init_complete when init is complete & when orig syscall completes
             if is_first_loop_after_init {
-                self.tracee_seccomp_init_complete.replace(true);
+                self.tracee_seccomp_init_complete
+                    .replace(!self.consts.args.no_seccomp);
                 self.is_after_syscall_entry.replace(true);
                 is_first_loop_after_init = false;
             }
@@ -669,6 +669,14 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     }
 
     async fn initialize_tracee_seccomp(&self) -> Result<(), SysAugError> {
+        if self.consts.args.no_seccomp {
+            event!(
+                Level::WARN,
+                "Skipping SECCOMP setup. This tracer will be slow."
+            );
+            return Ok(());
+        }
+
         let prctl_regs = unsafe {
             self._insert_syscall_during_init(
                 "SYS_prctl",

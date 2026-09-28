@@ -64,6 +64,10 @@ pub struct LaunchOptions {
     #[arg(long)]
     pub fix_mmap: bool,
 
+    /// Disable SECCOMP. This slows things down a lot but helps with gdb / debugging
+    #[arg(long)]
+    pub no_seccomp: bool,
+
     /// Quit as soon as any application fails
     #[arg(long)]
     pub fail_fast: bool,

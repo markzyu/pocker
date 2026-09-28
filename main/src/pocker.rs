@@ -239,6 +239,7 @@ fn run_instance(
         fail_fast: args.fail_fast,
         fix_sigsys: args.fix_sigsys,
         fix_mmap: args.fix_mmap || args.fix_attach,
+        no_seccomp: args.no_seccomp,
         gdb: args.gdb,
         gdb_at: args.gdb_at,
         use_native_loader: args.use_native_loader,

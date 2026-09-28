@@ -93,6 +93,7 @@ fn actual_main() -> Result<(), CLIError> {
         fail_fast: launch_args.fail_fast,
         fix_sigsys: launch_args.fix_sigsys,
         fix_mmap: launch_args.fix_mmap || launch_args.fix_attach,
+        no_seccomp: launch_args.no_seccomp,
         gdb: launch_args.gdb,
         gdb_at: launch_args.gdb_at,
         use_native_loader: launch_args.use_native_loader,
