@@ -136,3 +136,24 @@ pub fn canonicalize_clone(maybe_path: &Option<PathBuf>) -> Result<Option<PathBuf
         Ok(None)
     }
 }
+
+pub fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
+    if let Ok(filename) = std::env::var("RUST_LOG_DIR") {
+        let appender = tracing_appender::rolling::minutely(filename, "main.log");
+        let (non_blocking1, guard1) = tracing_appender::non_blocking(appender);
+        tracing_subscriber::fmt()
+            .with_writer(non_blocking1)
+            .with_ansi(false)
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init()
+            .expect("Unable to setup logging");
+        return guard1;
+    }
+    let (non_blocking2, guard2) = tracing_appender::non_blocking(std::io::stderr());
+    tracing_subscriber::fmt()
+        .with_writer(non_blocking2)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init()
+        .expect("Unable to setup logging");
+    return guard2;
+}
