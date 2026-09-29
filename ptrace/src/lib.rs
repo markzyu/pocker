@@ -182,7 +182,7 @@ pub fn set_syscall_num(pid: nix::unistd::Pid, val: usize) -> Result<(), PtraceEr
     event!(
         Level::DEBUG,
         "Replacing syscall {} with {}",
-        regs.last_syscall_num,
+        regs.syscall_num(),
         val,
     );
 

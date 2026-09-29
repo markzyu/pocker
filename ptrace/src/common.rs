@@ -594,8 +594,8 @@ pub struct GenericPurposeRegs {
     pub arg5: usize,
     pub arg6: usize,
     unknown_x7: usize,
-    /// on arm, there is only 1 syscall register. But tracer CANNOT use it alone to replace syscall.
-    pub last_syscall_num: usize,
+    /// on arm, this is the only syscall register. But tracer CANNOT use it alone to replace syscall.
+    pub reg_x8: usize,
     unknown_x9: usize,
     unknown_x10: usize,
     unknown_x11: usize,
@@ -635,8 +635,8 @@ pub struct GenericPurposeRegs {
     pub arg4: usize,
     pub arg5: usize,
     pub arg6: usize,
-    /// on arm, there is only 1 syscall register. But tracer CANNOT use it alone to replace syscall.
-    pub last_syscall_num: usize,
+    /// on arm, this is the only syscall register. But tracer CANNOT use it alone to replace syscall.
+    pub reg_r7: usize,
     unknown_x8: usize,
     unknown_x9: usize,
     unknown_x10: usize,
@@ -671,8 +671,8 @@ pub struct GenericPurposeRegs {
     pub arg2: usize,
     pub arg1: usize,
     pub arg0: usize,
-    /// On x86_64 this is "orig_rax". It CANNOT be used to set the next syscall
-    pub last_syscall_num: usize,
+    /// On x86_64 this is "original syscall number". It CANNOT be used to set the next syscall
+    orig_rax: usize,
     pub pc: usize,
     unknown_x18: usize,
     unknown_x19: usize,
@@ -686,7 +686,7 @@ pub struct GenericPurposeRegs {
     unknown_x27: usize,
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
+#[cfg(target_arch = "aarch64")]
 impl GenericPurposeRegs {
     pub fn syscall_retval(&self) -> usize {
         self.arg0
@@ -695,6 +695,26 @@ impl GenericPurposeRegs {
     pub fn set_syscall_retval(&mut self, val: usize) {
         event!(Level::INFO, "Setting return value: {}", val);
         self.arg0 = val
+    }
+
+    pub fn syscall_num(&self) -> usize {
+        self.reg_x8
+    }
+}
+
+#[cfg(target_arch = "arm")]
+impl GenericPurposeRegs {
+    pub fn syscall_retval(&self) -> usize {
+        self.arg0
+    }
+
+    pub fn set_syscall_retval(&mut self, val: usize) {
+        event!(Level::INFO, "Setting return value: {}", val);
+        self.arg0 = val
+    }
+
+    pub fn syscall_num(&self) -> usize {
+        self.reg_r7
     }
 }
 
@@ -709,12 +729,17 @@ impl GenericPurposeRegs {
         self.rax = val
     }
 
+    pub fn syscall_num(&self) -> usize {
+        self.orig_rax
+    }
+
     pub fn next_syscall(&self) -> usize {
         self.rax
     }
 
     pub fn set_next_syscall(&mut self, val: usize) {
-        self.rax = val
+        self.orig_rax = val;
+        self.rax = val;
     }
 }
 
@@ -761,7 +786,7 @@ pub fn setregs(pid: nix::unistd::Pid, mut data: GenericPurposeRegs) -> Result<()
     event!(
         Level::TRACE,
         "setregs, syscall {:#x} args {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}",
-        data.last_syscall_num,
+        data.syscall_num(),
         data.arg0,
         data.arg1,
         data.arg2,
@@ -791,7 +816,7 @@ pub fn setregs(pid: nix::unistd::Pid, mut data: GenericPurposeRegs) -> Result<()
     event!(
         Level::TRACE,
         "setregs, syscall {:#x} args {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}",
-        data.last_syscall_num,
+        data.syscall_num(),
         data.arg0,
         data.arg1,
         data.arg2,

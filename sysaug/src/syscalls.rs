@@ -12,6 +12,7 @@
 
 #![allow(non_snake_case)]
 #![allow(unused_macros)]
+
 use crate::common::{
     Augments, DelType, NO_MOD_SYSCALL, PermType, SyscallInfo, default_syscall_info,
 };
@@ -700,8 +701,8 @@ pub const SYSCALL_INSTRUCTION_SIZE: usize = 4;
 #[cfg(not(any(target_arch = "aarch64")))]
 pub const SYSCALL_INSTRUCTION_SIZE: usize = 2;
 
-pub fn get_syscall(syscall_num: &usize) -> (Option<&SyscallInfo>, String) {
-    let syscall_info = SYSCALL_INFOS.get(syscall_num);
+pub fn get_syscall(syscall_num: usize) -> (Option<&'static SyscallInfo>, String) {
+    let syscall_info = SYSCALL_INFOS.get(&syscall_num);
     let syscall_num_str = syscall_num.to_string();
     let syscall_name = syscall_info
         .map(|x| format!("{}({})", x.name(), &syscall_num_str))
