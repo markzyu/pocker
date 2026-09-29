@@ -13,9 +13,9 @@
 use clap::Args;
 use pocker_executor::PtraceServer;
 use pocker_sysaug::SysAugArgs;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
+use std::{os::fd::RawFd, path::PathBuf};
 use thiserror::Error;
 use tracing::{Level, event};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -90,15 +90,17 @@ pub fn launch_ptrace(
     args: SysAugArgs,
     cmd: std::process::Command,
     fix_attach: bool,
+    shared_fd: RawFd,
+    mmap_addr: usize,
 ) -> Result<Option<u8>, CLIError> {
     if fix_attach {
         let (ptrace_client, ptrace_loop) = pocker_executor::new_main_thread_executor();
-        let join = launch_ptrace_with(args, cmd, fix_attach, ptrace_client)?;
+        let join = launch_ptrace_with(args, cmd, fix_attach, ptrace_client, shared_fd, mmap_addr)?;
         ptrace_loop.serve()?;
         join.join().map_err(|_| CLIError::UnableToComplete)
     } else {
         let ptrace_client = pocker_executor::new_local_executor();
-        launch_ptrace_with(args, cmd, fix_attach, ptrace_client)?
+        launch_ptrace_with(args, cmd, fix_attach, ptrace_client, shared_fd, mmap_addr)?
             .join()
             .map_err(|_| CLIError::UnableToComplete)
     }
@@ -109,9 +111,11 @@ fn launch_ptrace_with<PtraceClient: pocker_executor::PtraceClient>(
     mut cmd: std::process::Command,
     fix_attach: bool,
     ptrace_client: PtraceClient,
+    shared_fd: RawFd,
+    mmap_addr: usize,
 ) -> Result<thread::JoinHandle<Option<u8>>, CLIError> {
     // Spawn first tracee
-    let (pid1, shared_fd, mmap_addr) = { pocker_ptrace::start(&mut cmd, fix_attach)? };
+    let pid1 = { pocker_ptrace::start(&mut cmd, fix_attach)? };
     event!(Level::INFO, "First tracee pid: {:?}", pid1);
 
     // Setup tracee handler states

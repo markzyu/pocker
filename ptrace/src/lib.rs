@@ -64,12 +64,9 @@ pub struct PtraceSyscallInfo {
     _reserved2: [u64; 3],
 }
 
-/// Assumption: This assumes the entire tracer program calls `start` only once
+/// Assumption: This function should only be called once.
 ///             So that it can safely initialize global, shared, mmap regions
-pub fn start(
-    cmd: &mut process::Command,
-    no_attach: bool,
-) -> Result<(unistd::Pid, RawFd, usize), PtraceError> {
+pub fn setup_shared_memory() -> Result<(RawFd, usize), PtraceError> {
     // Note: All FDs will auto close when dropped.
 
     // Open many empty FDs to at least make sure we get a high number as FD,
@@ -118,10 +115,13 @@ pub fn start(
         shared_fd,
         mmap_addr
     );
+
+    Ok((shared_fd.as_raw_fd(), mmap_addr))
+}
+
+pub fn start(cmd: &mut process::Command, no_attach: bool) -> Result<unistd::Pid, PtraceError> {
     match unsafe { unistd::fork() } {
-        Ok(unistd::ForkResult::Parent { child, .. }) => {
-            Ok((child, shared_fd.as_raw_fd(), mmap_addr))
-        }
+        Ok(unistd::ForkResult::Parent { child, .. }) => Ok(child),
         Ok(unistd::ForkResult::Child) => {
             if no_attach {
                 // Use PTRACE_TRACEME, and wait for tracer's main thread
@@ -242,8 +242,7 @@ mod tests {
 
     fn _start_cmd() -> unistd::Pid {
         let mut cmd = std::process::Command::new("ls");
-        let (pid, ..) = crate::start(&mut cmd, false).unwrap();
-        pid
+        crate::start(&mut cmd, false).unwrap()
     }
 
     #[test]

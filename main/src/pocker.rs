@@ -19,9 +19,10 @@ use oci_client::{
 };
 use oci_spec::image::{Arch, Os};
 use pocker::{CLIError, LaunchOptions, canonicalize_clone, init_logging, launch_ptrace};
+use pocker_ptrace::setup_shared_memory;
 use pocker_sysaug::{PermsMode, RAW_SYSCALL_INFOS, SysAugArgs};
-use std::path::PathBuf;
 use std::{ffi::OsString, io::Write};
+use std::{os::fd::RawFd, path::PathBuf};
 use tracing::{Level, event};
 use webpki_root_certs::TLS_SERVER_ROOT_CERTS;
 
@@ -128,9 +129,16 @@ fn main() -> anyhow::Result<()> {
             name,
             download,
         } => {
+            let (shared_fd, mmap_addr) = setup_shared_memory().context("Preparing ptrace")?;
             event!(Level::INFO, "Downloading image...");
             let storage_dir = get_storage_dir(&download)?;
-            let layers = download_image(image.clone(), &launch, download)?;
+            let layers = download_image(
+                image.clone(),
+                &launch,
+                download,
+                shared_fd.clone(),
+                mmap_addr,
+            )?;
 
             event!(Level::INFO, "Creating instance...");
             let instances_dir = storage_dir.join("instances");
@@ -154,7 +162,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             let cmd = cmd.unwrap_or("/bin/sh".to_string());
-            let result = run_instance(cmd, &launch, instance, layers);
+            let result = run_instance(cmd, &launch, instance, layers, shared_fd, mmap_addr);
 
             event!(Level::INFO, "Cleaning up...");
             std::fs::remove_file(&lockfile).context("Failed to unlock instance")?;
@@ -171,9 +179,10 @@ fn main() -> anyhow::Result<()> {
         } => {
             if let Some(layer) = internal_layer {
                 event!(Level::INFO, "Downloading layer {}...", &layer);
-                download_layer(image, layer, &launch, &download, true)?;
+                download_layer_from_tracee(layer, &download)?;
             } else {
-                download_image(image, &launch, download)?;
+                let (shared_fd, mmap_addr) = setup_shared_memory().context("Preparing ptrace")?;
+                download_image(image, &launch, download, shared_fd, mmap_addr)?;
             }
             Ok(())
         }
@@ -208,55 +217,17 @@ fn resolver_for_linux(manifests: &[ImageIndexEntry]) -> Option<String> {
         .map(|entry| entry.digest.clone())
 }
 
-fn download_layer(
-    image_name: String,
-    layer: String,
-    args: &LaunchOptions,
-    download: &ImageDownloadArgs,
-    has_tracer: bool,
-) -> anyhow::Result<()> {
+fn download_layer_from_tracee(layer: String, download: &ImageDownloadArgs) -> anyhow::Result<()> {
     let storage_dir = get_storage_dir(&download)?;
     let layers_dir = storage_dir.join("layers");
     let tar_name = format!("{}.tar.gz", layer);
     let layer_tar = layers_dir.join(tar_name);
     let layer_dir = layers_dir.join(&layer);
 
-    if has_tracer {
-        let tar_file = std::fs::File::open(layer_tar)?;
-        let mut gz = GzDecoder::new(tar_file);
-        let mut tar = tar::Archive::new(&mut gz);
-        tar.unpack(&layer_dir)?;
-    } else {
-        event!(Level::INFO, "Starting layer download {}", &layer);
-        std::fs::create_dir_all(&layer_dir)?;
-        let self_path = std::env::current_exe()?.canonicalize()?;
-        let args2 = SysAugArgs {
-            chroot: None,
-            rootfs: Some(layer_dir.clone()),
-            perms_mode: PermsMode::RootOnly,
-            fail_fast: args.fail_fast,
-            fix_sigsys: args.fix_sigsys,
-            fix_mmap: args.fix_mmap || args.fix_attach,
-            no_seccomp: args.no_seccomp,
-            gdb: args.gdb,
-            gdb_at: args.gdb_at,
-            use_native_loader: args.use_native_loader,
-        };
-
-        let fix_attach = args.fix_attach;
-        let mut cmd = std::process::Command::new(&self_path);
-        let mut args: Vec<OsString> = Vec::new();
-        args.push("download".into());
-        args.push(image_name.into());
-        args.push("--internal-layer".into());
-        args.push(layer.into());
-        download.push_os_strings(&mut args);
-        cmd.args(args);
-
-        if let Err(e) = launch_ptrace(args2, cmd, fix_attach) {
-            bail!("Error: {:?}", e);
-        }
-    }
+    let tar_file = std::fs::File::open(layer_tar)?;
+    let mut gz = GzDecoder::new(tar_file);
+    let mut tar = tar::Archive::new(&mut gz);
+    tar.unpack(&layer_dir)?;
     Ok(())
 }
 
@@ -273,6 +244,8 @@ fn download_image(
     image_name: String,
     launch: &LaunchOptions,
     args: ImageDownloadArgs,
+    shared_fd: RawFd,
+    mmap_addr: usize,
 ) -> anyhow::Result<Vec<PathBuf>> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all() // Enables both the I/O driver and the time driver
@@ -315,9 +288,37 @@ fn download_image(
 
         let tar_name = format!("{}.tar.gz", &digest);
         let layer_tar = layers_dir.join(&tar_name);
-        std::fs::create_dir_all(&layers_dir)?;
+        std::fs::create_dir_all(&layer_dir)?;
         std::fs::write(&layer_tar, layer.data).context("Saving layer tarfile")?;
-        download_layer(image_name.clone(), digest, launch, &args, false)?;
+
+        event!(Level::INFO, "Starting layer download {}", &digest);
+        let self_path = std::env::current_exe()?.canonicalize()?;
+        let args2 = SysAugArgs {
+            chroot: None,
+            rootfs: Some(layer_dir.clone()),
+            perms_mode: PermsMode::RootOnly,
+            fail_fast: launch.fail_fast,
+            fix_sigsys: launch.fix_sigsys,
+            fix_mmap: launch.fix_mmap || launch.fix_attach,
+            no_seccomp: launch.no_seccomp,
+            gdb: launch.gdb,
+            gdb_at: launch.gdb_at,
+            use_native_loader: launch.use_native_loader,
+        };
+
+        let fix_attach = launch.fix_attach;
+        let mut cmd = std::process::Command::new(&self_path);
+        let mut new_args: Vec<OsString> = Vec::new();
+        new_args.push("download".into());
+        new_args.push(image_name.clone().into());
+        new_args.push("--internal-layer".into());
+        new_args.push(digest.into());
+        args.push_os_strings(&mut new_args);
+        cmd.args(new_args);
+
+        if let Err(e) = launch_ptrace(args2, cmd, fix_attach, shared_fd.clone(), mmap_addr) {
+            bail!("Error: {:?}", e);
+        }
     }
 
     Ok(layer_dirs)
@@ -328,6 +329,8 @@ fn run_instance(
     args: &LaunchOptions,
     instance: PathBuf,
     layers: Vec<PathBuf>,
+    shared_fd: RawFd,
+    mmap_addr: usize,
 ) -> anyhow::Result<Option<u8>> {
     let instance = instance.canonicalize()?;
     let args2 = SysAugArgs {
@@ -344,7 +347,7 @@ fn run_instance(
     };
 
     let cmd = std::process::Command::new(&cmd);
-    match launch_ptrace(args2, cmd, args.fix_attach) {
+    match launch_ptrace(args2, cmd, args.fix_attach, shared_fd, mmap_addr) {
         Err(e) => bail!("Error: {:?}", e),
         Ok(ans) => Ok(ans),
     }

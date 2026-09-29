@@ -12,6 +12,7 @@
 
 use clap::Parser;
 use pocker::{CLIError, LaunchOptions, canonicalize_clone, init_logging, launch_ptrace};
+use pocker_ptrace::setup_shared_memory;
 use pocker_sysaug::{PermsMode, RAW_SYSCALL_INFOS, SysAugArgs, display_err};
 use std::path::PathBuf;
 use tracing::{Level, event};
@@ -99,8 +100,10 @@ fn actual_main() -> Result<(), CLIError> {
         use_native_loader: launch_args.use_native_loader,
     };
 
+    let (shared_fd, mmap_addr) = setup_shared_memory().expect("Preparing ptrace");
+
     let cmd = std::process::Command::new(&args.cmd);
-    let retcode = launch_ptrace(args2, cmd, launch_args.fix_attach)?;
+    let retcode = launch_ptrace(args2, cmd, launch_args.fix_attach, shared_fd, mmap_addr)?;
     event!(Level::INFO, "Done. (all tracees exited)");
     std::process::exit(retcode.unwrap() as i32);
 }
