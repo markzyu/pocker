@@ -86,7 +86,13 @@ class TestBasics(t.TestCase):
             ans = run_method(b"./tests/fixtures/07-perms-setuid-neg1.out", root=True)
             EINVAL = str(errno.EINVAL).encode()
             self.assertIn(b"result: -1 errno: " + EINVAL, ans.stdout)
-    
+
+    def test_first_syscall_after_exec(self):
+        for run_method in (c.run_script, c.run_elf_chroot):
+            # This program always return 123. And the first syscall is just SYS_exit
+            ans = run_method(b"./tests/fixtures/1b-first-syscall.out", root=True)
+            self.assertEqual(ans.returncode, 123)
+
     @t.skip('Modern linux can set ping permission per binary, which causes this to fail')
     def test_ping_if_ping_is_available(self):
         ping_available = os.system("echo Making sure ping is available...; ping -c 4 localhost")
