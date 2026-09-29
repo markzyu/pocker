@@ -22,7 +22,7 @@ def run_script(script, timeout=7, stderr=None, env=None, **kwargs):
         timeout=timeout,
         stdout=sub.PIPE,
         stderr=stderr or os.sys.stderr,
-        env=env or {}
+        env=env or None
     )
 
 def run_elf(elf_path, timeout=7, stderr=None, env=None, **kwargs):
