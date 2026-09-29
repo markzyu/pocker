@@ -158,7 +158,8 @@ pub fn init_logging() -> Option<WorkerGuard> {
             .with_ansi(false)
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env());
         if is_blocking {
-            builder.with_writer(appender)
+            builder
+                .with_writer(appender)
                 .try_init()
                 .expect("Unable to setup logging");
         } else {
@@ -176,7 +177,8 @@ pub fn init_logging() -> Option<WorkerGuard> {
         .with_ansi(!no_color)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env());
     if is_blocking {
-        builder.with_writer(std::io::stderr)
+        builder
+            .with_writer(std::io::stderr)
             .try_init()
             .expect("Unable to setup logging");
     } else {
