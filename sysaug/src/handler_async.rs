@@ -333,7 +333,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     // If we got this due to SECCOMP, let Augments handle the sysexit event
                     // (Note: we can't yield to the other loops here, because this sysexit is unexpected)
                     if is_seccomp {
-                        let syscall_num = regs.syscall_num;
+                        let syscall_num = regs.last_syscall_num;
                         let (syscall_info, _) = get_syscall(&syscall_num);
                         let which_aug = syscall_info.map(|x| &x.augment);
                         event!(
@@ -355,7 +355,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     }
 
                     // If we were trying to override a syscall, follow that override.
-                    if regs.syscall_num == NO_MOD_SYSCALL {
+                    if regs.last_syscall_num == NO_MOD_SYSCALL {
                         self.yielder_syscall.yield_now().await;
                         continue;
                     }
@@ -487,7 +487,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             self.wait_for_syscall().await?;
             self.orig_syscall_num.replace(None);
             let regs = self.ptrace_client.execute(move || getregs(pid))??;
-            let (maybe_syscall_info, syscall_name) = get_syscall(&regs.syscall_num);
+            let (maybe_syscall_info, syscall_name) = get_syscall(&regs.last_syscall_num);
             let which_aug = maybe_syscall_info.map(|x| &x.augment);
             event!(
                 Level::DEBUG,
@@ -538,7 +538,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             // aarch64 doesn't work if we read regs right after execve()
             // Yet, x86_64 requires it...
             let _new_regs = self.ptrace_client.execute(move || getregs(pid))??;
-            let (_new_syscall_info, _) = get_syscall(&_new_regs.syscall_num);
+            let (_new_syscall_info, _) = get_syscall(&_new_regs.last_syscall_num);
             #[cfg(not(any(target_arch = "aarch64")))]
             let which_aug = _new_syscall_info.map(|x| &x.augment);
 
@@ -581,14 +581,14 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let orig_syscall_num = if let Some(val) = clone_orig_syscall_num {
             val
         } else {
-            let (_, orig_syscall_name) = get_syscall(&regs.syscall_num);
-            self.orig_syscall_num.replace(Some(regs.syscall_num));
+            let (_, orig_syscall_name) = get_syscall(&regs.last_syscall_num);
+            self.orig_syscall_num.replace(Some(regs.last_syscall_num));
             event!(
                 Level::INFO,
                 "TraceeInit: Overriding first syscall, was {:?}",
                 orig_syscall_name
             );
-            regs.syscall_num
+            regs.last_syscall_num
         };
 
         // Override that system call to run mmap instead
@@ -617,12 +617,11 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         // and decrement PC pointer to immediately rerun system call
         // (Note: This doesn't actually resume the syscall, so it's ok to call _insert_syscall_during_init() again)
         let mut new_regs = orig_regs;
-        new_regs.syscall_num = orig_syscall_num;
         new_regs.pc -= SYSCALL_INSTRUCTION_SIZE;
         event!(
             Level::DEBUG,
             "TraceeInit: Continuing syscall {} from {:x}",
-            new_regs.syscall_num,
+            new_regs.last_syscall_num,
             new_regs.pc
         );
         self.ptrace_client

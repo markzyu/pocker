@@ -182,18 +182,18 @@ pub fn set_syscall_num(pid: nix::unistd::Pid, val: usize) -> Result<(), PtraceEr
     event!(
         Level::DEBUG,
         "Replacing syscall {} with {}",
-        regs.syscall_num,
+        regs.last_syscall_num,
         val,
     );
 
-    regs.syscall_num = val;
+    regs.set_next_syscall(val);
     setregs(pid, regs)?;
 
     let regs2 = getregs(pid)?;
     event!(
         Level::TRACE,
         "Confirm regs: syscall {} with {:x} {:x} {:x}",
-        regs2.syscall_num,
+        regs2.next_syscall(),
         regs2.arg0,
         regs2.arg1,
         regs2.arg2,

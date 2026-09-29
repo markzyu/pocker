@@ -594,7 +594,8 @@ pub struct GenericPurposeRegs {
     pub arg5: usize,
     pub arg6: usize,
     unknown_x7: usize,
-    pub syscall_num: usize,
+    /// on arm, there is only 1 syscall register. But tracer CANNOT use it alone to replace syscall.
+    pub last_syscall_num: usize,
     unknown_x9: usize,
     unknown_x10: usize,
     unknown_x11: usize,
@@ -634,7 +635,8 @@ pub struct GenericPurposeRegs {
     pub arg4: usize,
     pub arg5: usize,
     pub arg6: usize,
-    pub syscall_num: usize,
+    /// on arm, there is only 1 syscall register. But tracer CANNOT use it alone to replace syscall.
+    pub last_syscall_num: usize,
     unknown_x8: usize,
     unknown_x9: usize,
     unknown_x10: usize,
@@ -669,8 +671,8 @@ pub struct GenericPurposeRegs {
     pub arg2: usize,
     pub arg1: usize,
     pub arg0: usize,
-    // "orig_rax"
-    pub syscall_num: usize,
+    /// On x86_64 this is "orig_rax". It CANNOT be used to set the next syscall
+    pub last_syscall_num: usize,
     pub pc: usize,
     unknown_x18: usize,
     unknown_x19: usize,
@@ -704,6 +706,14 @@ impl GenericPurposeRegs {
 
     pub fn set_syscall_retval(&mut self, val: usize) {
         event!(Level::INFO, "Setting return value: {}", val);
+        self.rax = val
+    }
+
+    pub fn next_syscall(&self) -> usize {
+        self.rax
+    }
+
+    pub fn set_next_syscall(&mut self, val: usize) {
         self.rax = val
     }
 }
@@ -751,7 +761,7 @@ pub fn setregs(pid: nix::unistd::Pid, mut data: GenericPurposeRegs) -> Result<()
     event!(
         Level::TRACE,
         "setregs, syscall {:#x} args {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}",
-        data.syscall_num,
+        data.last_syscall_num,
         data.arg0,
         data.arg1,
         data.arg2,
@@ -781,7 +791,7 @@ pub fn setregs(pid: nix::unistd::Pid, mut data: GenericPurposeRegs) -> Result<()
     event!(
         Level::TRACE,
         "setregs, syscall {:#x} args {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}",
-        data.syscall_num,
+        data.last_syscall_num,
         data.arg0,
         data.arg1,
         data.arg2,
