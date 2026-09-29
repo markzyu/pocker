@@ -9,4 +9,5 @@ ldd "$elf" | sed 's/\(\s*\).*=>\s*/\1/g' | awk '{print $1}' | (while read line; 
     cp "$line" "$target"
 done)
 
+mkdir -p "$rootdir"
 cp "$elf" "$rootdir/executable"
