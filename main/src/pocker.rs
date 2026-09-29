@@ -11,7 +11,6 @@
 // GNU General Public License for more details.
 
 use anyhow::{Context, bail};
-use bytes::Buf;
 use clap::{Args, Parser, Subcommand};
 use flate2::read::GzDecoder;
 use oci_client::{
@@ -21,8 +20,8 @@ use oci_client::{
 use oci_spec::image::{Arch, Os};
 use pocker::{CLIError, LaunchOptions, canonicalize_clone, init_logging, launch_ptrace};
 use pocker_sysaug::{PermsMode, RAW_SYSCALL_INFOS, SysAugArgs};
-use std::io::Write;
 use std::path::PathBuf;
+use std::{ffi::OsString, io::Write};
 use tracing::{Level, event};
 use webpki_root_certs::TLS_SERVER_ROOT_CERTS;
 
@@ -49,6 +48,21 @@ enum Commands {
         /// Give a different name to this instance of the container
         #[arg(long)]
         name: Option<String>,
+
+        #[command(flatten)]
+        launch: LaunchOptions,
+
+        #[command(flatten)]
+        download: ImageDownloadArgs,
+    },
+    /// Download a container from image name, and unarchive with fake permissions in mind
+    Download {
+        /// The name of the container image
+        image: String,
+
+        /// This is an internal option. Please do not use it unless you know what you're doing.
+        #[arg(long)]
+        internal_layer: Option<String>,
 
         #[command(flatten)]
         launch: LaunchOptions,
@@ -85,6 +99,20 @@ struct ImageDownloadArgs {
     registry_namespace: String,
 }
 
+impl ImageDownloadArgs {
+    fn push_os_strings(&self, ans: &mut Vec<OsString>) -> () {
+        if let Some(path) = self.storage_path.as_ref() {
+            ans.push("--storage-path".into());
+            ans.push(path.clone().into_os_string());
+        }
+        ans.push("--registry-host".into());
+        ans.push(self.registry_host.clone().into());
+
+        ans.push("--registry-namespace".into());
+        ans.push(self.registry_namespace.clone().into());
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // Initialize, parse args
     rustls::crypto::ring::default_provider()
@@ -101,9 +129,22 @@ fn main() -> anyhow::Result<()> {
             download,
         } => {
             event!(Level::INFO, "Downloading image...");
-            let (instance, layers) = download_image(image, name, download)?;
+            let storage_dir = get_storage_dir(&download)?;
+            let layers = download_image(image.clone(), &launch, download)?;
 
             event!(Level::INFO, "Creating instance...");
+            let instances_dir = storage_dir.join("instances");
+            let instance_name = name.unwrap_or(image);
+            let instance = instances_dir.join(&instance_name);
+            let instance_running = instances_dir.join(LOCKFILE_RUNNING);
+            if instance_running.exists() {
+                bail!(
+                    "Refusing to overwrite an existing, running instance: {}",
+                    &instance_name
+                );
+            }
+
+            event!(Level::INFO, "Running instance...");
             std::fs::create_dir_all(&instance).context("Failed to create instance dir")?;
             let lockfile = instance.join(LOCKFILE_RUNNING);
             {
@@ -112,7 +153,6 @@ fn main() -> anyhow::Result<()> {
                 writeln!(file, "")?;
             }
 
-            event!(Level::INFO, "Running instance...");
             let cmd = cmd.unwrap_or("/bin/sh".to_string());
             let result = run_instance(cmd, &launch, instance, layers);
 
@@ -123,10 +163,22 @@ fn main() -> anyhow::Result<()> {
             event!(Level::INFO, "Done.");
             std::process::exit(retcode.unwrap() as i32);
         }
+        Commands::Download {
+            image,
+            internal_layer,
+            launch,
+            download,
+        } => {
+            if let Some(layer) = internal_layer {
+                event!(Level::INFO, "Downloading layer {}...", &layer);
+                download_layer(image, layer, &launch, &download, true)?;
+            } else {
+                download_image(image, &launch, download)?;
+            }
+            Ok(())
+        }
     }
 }
-
-type InstanceAndLayers = (PathBuf, Vec<PathBuf>);
 
 fn get_oci_client() -> oci_client::Client {
     let certs: Vec<_> = TLS_SERVER_ROOT_CERTS
@@ -156,11 +208,71 @@ fn resolver_for_linux(manifests: &[ImageIndexEntry]) -> Option<String> {
         .map(|entry| entry.digest.clone())
 }
 
+fn download_layer(
+    image_name: String,
+    layer: String,
+    args: &LaunchOptions,
+    download: &ImageDownloadArgs,
+    has_tracer: bool,
+) -> anyhow::Result<()> {
+    let storage_dir = get_storage_dir(&download)?;
+    let layers_dir = storage_dir.join("layers");
+    let tar_name = format!("{}.tar.gz", layer);
+    let layer_tar = layers_dir.join(tar_name);
+    let layer_dir = layers_dir.join(&layer);
+
+    if has_tracer {
+        let tar_file = std::fs::File::open(layer_tar)?;
+        let mut gz = GzDecoder::new(tar_file);
+        let mut tar = tar::Archive::new(&mut gz);
+        tar.unpack(&layer_dir)?;
+    } else {
+        std::fs::create_dir_all(&layer_dir)?;
+        let self_path = std::env::current_exe()?.canonicalize()?;
+        let args2 = SysAugArgs {
+            chroot: None,
+            rootfs: Some(layer_dir.clone()),
+            perms_mode: PermsMode::RootOnly,
+            fail_fast: args.fail_fast,
+            fix_sigsys: args.fix_sigsys,
+            fix_mmap: args.fix_mmap || args.fix_attach,
+            no_seccomp: args.no_seccomp,
+            gdb: args.gdb,
+            gdb_at: args.gdb_at,
+            use_native_loader: args.use_native_loader,
+        };
+
+        let fix_attach = args.fix_attach;
+        let mut cmd = std::process::Command::new(&self_path);
+        let mut args: Vec<OsString> = Vec::new();
+        args.push("download".into());
+        args.push(image_name.into());
+        args.push(layer.into());
+        args.push("--no-new-tracer".into());
+        download.push_os_strings(&mut args);
+        cmd.args(args);
+
+        if let Err(e) = launch_ptrace(args2, cmd, fix_attach) {
+            bail!("Error: {:?}", e);
+        }
+    }
+    Ok(())
+}
+
+fn get_storage_dir(args: &ImageDownloadArgs) -> anyhow::Result<PathBuf> {
+    let default_dir = std::env::home_dir().map(|p| p.join(".pocker").join("storage"));
+    let Some(storage_dir) = args.storage_path.clone().or(default_dir) else {
+        bail!("Cannot establish default pocker storage at ~/.pocker/storage");
+    };
+    std::fs::create_dir_all(&storage_dir)?;
+    Ok(storage_dir)
+}
+
 fn download_image(
     image_name: String,
-    instance_name: Option<String>,
+    launch: &LaunchOptions,
     args: ImageDownloadArgs,
-) -> anyhow::Result<InstanceAndLayers> {
+) -> anyhow::Result<Vec<PathBuf>> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all() // Enables both the I/O driver and the time driver
         .build()?;
@@ -181,25 +293,8 @@ fn download_image(
     });
     let image = image?;
 
-    let default_dir = std::env::home_dir().map(|p| p.join(".pocker").join("storage"));
-    let Some(storage_dir) = args.storage_path.or(default_dir) else {
-        bail!("Cannot establish default pocker storage at ~/.pocker/storage");
-    };
-    std::fs::create_dir_all(&storage_dir)?;
-
+    let storage_dir = get_storage_dir(&args)?;
     let layers_dir = storage_dir.join("layers");
-    let instances_dir = storage_dir.join("instances");
-    let instance_name = instance_name.unwrap_or(image_name);
-    let instance = instances_dir.join(&instance_name);
-    let instance_running = instances_dir.join(LOCKFILE_RUNNING);
-
-    std::fs::create_dir_all(&instances_dir)?;
-    if instance_running.exists() {
-        bail!(
-            "Refusing to overwrite an existing, running instance: {}",
-            &instance_name
-        );
-    }
 
     let mut layer_dirs: Vec<PathBuf> = Vec::new();
     for layer in image.layers {
@@ -217,12 +312,13 @@ fn download_image(
             bail!("Unknown image format: {}", image.config.media_type);
         }
 
-        let mut gz = GzDecoder::new(layer.data.reader());
-        let mut tar = tar::Archive::new(&mut gz);
-        tar.unpack(&layer_dir)?;
+        let tar_name = format!("{}.tar.gz", &digest);
+        let layer_tar = layers_dir.join(&tar_name);
+        std::fs::write(&layer_tar, layer.data)?;
+        download_layer(image_name.clone(), digest, launch, &args, false)?;
     }
 
-    Ok((instance, layer_dirs))
+    Ok(layer_dirs)
 }
 
 fn run_instance(
@@ -245,7 +341,8 @@ fn run_instance(
         use_native_loader: args.use_native_loader,
     };
 
-    match launch_ptrace(args2, &cmd, args.fix_attach) {
+    let cmd = std::process::Command::new(&cmd);
+    match launch_ptrace(args2, cmd, args.fix_attach) {
         Err(e) => bail!("Error: {:?}", e),
         Ok(ans) => Ok(ans),
     }

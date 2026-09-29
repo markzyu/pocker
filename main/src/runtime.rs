@@ -99,7 +99,8 @@ fn actual_main() -> Result<(), CLIError> {
         use_native_loader: launch_args.use_native_loader,
     };
 
-    let retcode = launch_ptrace(args2, &args.cmd, launch_args.fix_attach)?;
+    let cmd = std::process::Command::new(&args.cmd);
+    let retcode = launch_ptrace(args2, cmd, launch_args.fix_attach)?;
     event!(Level::INFO, "Done. (all tracees exited)");
     std::process::exit(retcode.unwrap() as i32);
 }
