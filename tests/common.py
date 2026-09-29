@@ -12,7 +12,7 @@ def run(args, **kwargs):
     return os.system(f"{cmd} {args} 1>/dev/null 2>/dev/null")
 
 
-def run_script(script, timeout=7, stderr=None, **kwargs):
+def run_script(script, timeout=7, stderr=None, env=None, **kwargs):
     cmd = _get_cmd(**kwargs)
     cmd_expr = " ".join(cmd)
     print(f"cmd = {cmd_expr} script = {script.strip()}")
@@ -22,9 +22,10 @@ def run_script(script, timeout=7, stderr=None, **kwargs):
         timeout=timeout,
         stdout=sub.PIPE,
         stderr=stderr or os.sys.stderr,
+        env=env or {}
     )
 
-def run_elf(elf_path, timeout=7, stderr=None, **kwargs):
+def run_elf(elf_path, timeout=7, stderr=None, env=None, **kwargs):
     """
     Run an ELF binary file without chroot
     """
@@ -43,11 +44,11 @@ def run_elf(elf_path, timeout=7, stderr=None, **kwargs):
         timeout=timeout,
         stdout=sub.PIPE,
         stderr=stderr or os.sys.stderr,
-        env={},
+        env=env or {}
     )
 
 
-def run_elf_chroot(elf_path, timeout=7, stderr=None, **kwargs):
+def run_elf_chroot(elf_path, timeout=7, stderr=None, env=None, **kwargs):
     """
     Run an ELF binary file with a proper --chroot
     """
@@ -73,7 +74,7 @@ def run_elf_chroot(elf_path, timeout=7, stderr=None, **kwargs):
         timeout=timeout,
         stdout=sub.PIPE,
         stderr=stderr or os.sys.stderr,
-        env={},
+        env=env or {}
     )
 
 
