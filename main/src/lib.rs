@@ -86,6 +86,7 @@ pub struct LaunchOptions {
     pub use_native_loader: bool,
 }
 
+/// Note: for shared_fd, you must pass in a clone
 pub fn launch_ptrace(
     args: SysAugArgs,
     cmd: std::process::Command,
@@ -106,6 +107,7 @@ pub fn launch_ptrace(
     }
 }
 
+/// Note: for shared_fd, you must pass in a clone
 fn launch_ptrace_with<PtraceClient: pocker_executor::PtraceClient>(
     args: SysAugArgs,
     mut cmd: std::process::Command,

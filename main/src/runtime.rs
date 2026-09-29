@@ -103,7 +103,13 @@ fn actual_main() -> Result<(), CLIError> {
     let (shared_fd, mmap_addr) = setup_shared_memory().expect("Preparing ptrace");
 
     let cmd = std::process::Command::new(&args.cmd);
-    let retcode = launch_ptrace(args2, cmd, launch_args.fix_attach, shared_fd, mmap_addr)?;
+    let retcode = launch_ptrace(
+        args2,
+        cmd,
+        launch_args.fix_attach,
+        shared_fd.clone(),
+        mmap_addr,
+    )?;
     event!(Level::INFO, "Done. (all tracees exited)");
     std::process::exit(retcode.unwrap() as i32);
 }

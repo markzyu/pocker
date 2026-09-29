@@ -347,7 +347,7 @@ fn run_instance(
     };
 
     let cmd = std::process::Command::new(&cmd);
-    match launch_ptrace(args2, cmd, args.fix_attach, shared_fd, mmap_addr) {
+    match launch_ptrace(args2, cmd, args.fix_attach, shared_fd.clone(), mmap_addr) {
         Err(e) => bail!("Error: {:?}", e),
         Ok(ans) => Ok(ans),
     }
