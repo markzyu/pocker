@@ -92,7 +92,7 @@ class TestBasics(t.TestCase):
         for run_method in (c.run_script, c.run_elf_chroot):
             # This program always return 123. And the first syscall is just SYS_exit
             env = {
-                "RUST_LOG": "TRACE"
+                "RUST_LOG": "TRACE",
                 "RUST_LOG_BLOCKING": "1"
             }
             ans = run_method(b"./tests/fixtures/1b-first-syscall.out", root=True, stderr=subprocess.PIPE, env=env)
