@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::thread;
 use thiserror::Error;
 use tracing::{Level, event};
+use tracing_appender::non_blocking::WorkerGuard;
 
 #[derive(Debug, Error)]
 pub enum CLIError {
@@ -147,23 +148,45 @@ pub fn canonicalize_clone(maybe_path: &Option<PathBuf>) -> Result<Option<PathBuf
     }
 }
 
-pub fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
+pub fn init_logging() -> Option<WorkerGuard> {
+    let no_color = std::env::var("RUST_LOG_NO_COLOR").is_ok();
+    let is_blocking = std::env::var("RUST_LOG_BLOCKING").is_ok();
+    let mut guard: Option<WorkerGuard> = None;
     if let Ok(filename) = std::env::var("RUST_LOG_DIR") {
         let appender = tracing_appender::rolling::minutely(filename, "main.log");
-        let (non_blocking1, guard1) = tracing_appender::non_blocking(appender);
-        tracing_subscriber::fmt()
-            .with_writer(non_blocking1)
+        let builder = tracing_subscriber::fmt()
             .with_ansi(false)
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env());
+        if is_blocking {
+            builder.with_writer(appender)
+                .try_init()
+                .expect("Unable to setup logging");
+        } else {
+            let (non_blocking1, guard1) = tracing_appender::non_blocking(appender);
+            guard.replace(guard1);
+            builder
+                .with_writer(non_blocking1)
+                .try_init()
+                .expect("Unable to setup logging");
+        };
+        return guard;
+    }
+
+    let builder = tracing_subscriber::fmt()
+        .with_ansi(!no_color)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env());
+    if is_blocking {
+        builder.with_writer(std::io::stderr)
             .try_init()
             .expect("Unable to setup logging");
-        return guard1;
-    }
-    let (non_blocking2, guard2) = tracing_appender::non_blocking(std::io::stderr());
-    tracing_subscriber::fmt()
-        .with_writer(non_blocking2)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .try_init()
-        .expect("Unable to setup logging");
-    return guard2;
+    } else {
+        let stderr = std::io::stderr();
+        let (non_blocking1, guard1) = tracing_appender::non_blocking(stderr);
+        guard.replace(guard1);
+        builder
+            .with_writer(non_blocking1)
+            .try_init()
+            .expect("Unable to setup logging");
+    };
+    return guard;
 }

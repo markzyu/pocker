@@ -6,8 +6,16 @@ import unittest as t
 
 
 class TestBasics(t.TestCase):
+
     def setUp(self):
+        self._delete_env("RUST_LOG_NO_COLOR")
+        self._delete_env("RUST_LOG_BLOCKING")
+        self._delete_env("RUST_LOG")
         pass
+
+    def _delete_env(self, name):
+        if name in os.environ:
+            del os.environ[name]
 
     def test_reports_success(self):
         self.assertEqual(c.run("--cmd echo"), 0)
@@ -90,8 +98,14 @@ class TestBasics(t.TestCase):
     def test_first_syscall_after_exec(self):
         for run_method in (c.run_script, c.run_elf_chroot):
             # This program always return 123. And the first syscall is just SYS_exit
+            os.environ["RUST_LOG_NO_COLOR"] = "1"
+            os.environ["RUST_LOG_BLOCKING"] = "1"
+            os.environ["RUST_LOG"] = "TRACE"
             ans = run_method(b"./tests/fixtures/1b-first-syscall.out", root=True)
-            self.assertEqual(ans.returncode, 123)
+            self.assertEqual(ans.returncode, 123, stderr=subprocess.PIPE)
+
+            # Make sure that the entire tracee initialization is complete.
+            self.assertIn(b"Tracee initialized seccomp with default filters", ans.stderr)
 
     @t.skip('Modern linux can set ping permission per binary, which causes this to fail')
     def test_ping_if_ping_is_available(self):
