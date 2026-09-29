@@ -227,6 +227,7 @@ fn download_layer(
         let mut tar = tar::Archive::new(&mut gz);
         tar.unpack(&layer_dir)?;
     } else {
+        event!(Level::INFO, "Starting layer download {}", &layer);
         std::fs::create_dir_all(&layer_dir)?;
         let self_path = std::env::current_exe()?.canonicalize()?;
         let args2 = SysAugArgs {
@@ -247,8 +248,8 @@ fn download_layer(
         let mut args: Vec<OsString> = Vec::new();
         args.push("download".into());
         args.push(image_name.into());
+        args.push("--internal-layer".into());
         args.push(layer.into());
-        args.push("--no-new-tracer".into());
         download.push_os_strings(&mut args);
         cmd.args(args);
 
@@ -314,7 +315,8 @@ fn download_image(
 
         let tar_name = format!("{}.tar.gz", &digest);
         let layer_tar = layers_dir.join(&tar_name);
-        std::fs::write(&layer_tar, layer.data)?;
+        std::fs::create_dir_all(&layers_dir)?;
+        std::fs::write(&layer_tar, layer.data).context("Saving layer tarfile")?;
         download_layer(image_name.clone(), digest, launch, &args, false)?;
     }
 
