@@ -14,6 +14,7 @@ use clap::Parser;
 use pocker::{CLIError, LaunchOptions, canonicalize_clone, init_logging, launch_ptrace};
 use pocker_ptrace::setup_shared_memory;
 use pocker_sysaug::{PermsMode, RAW_SYSCALL_INFOS, SysAugArgs, display_err};
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use tracing::{Level, event};
 
@@ -107,7 +108,7 @@ fn actual_main() -> Result<(), CLIError> {
         args2,
         cmd,
         launch_args.fix_attach,
-        shared_fd.clone(),
+        shared_fd.as_raw_fd(),
         mmap_addr,
     )?;
     event!(Level::INFO, "Done. (all tracees exited)");

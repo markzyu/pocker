@@ -21,6 +21,7 @@ use oci_spec::image::{Arch, Os};
 use pocker::{CLIError, LaunchOptions, canonicalize_clone, init_logging, launch_ptrace};
 use pocker_ptrace::setup_shared_memory;
 use pocker_sysaug::{PermsMode, RAW_SYSCALL_INFOS, SysAugArgs};
+use std::os::fd::AsRawFd;
 use std::{ffi::OsString, io::Write};
 use std::{os::fd::RawFd, path::PathBuf};
 use tracing::{Level, event};
@@ -136,7 +137,7 @@ fn main() -> anyhow::Result<()> {
                 image.clone(),
                 &launch,
                 download,
-                shared_fd.clone(),
+                shared_fd.as_raw_fd(),
                 mmap_addr,
             )?;
 
@@ -162,7 +163,14 @@ fn main() -> anyhow::Result<()> {
             }
 
             let cmd = cmd.unwrap_or("/bin/sh".to_string());
-            let result = run_instance(cmd, &launch, instance, layers, shared_fd, mmap_addr);
+            let result = run_instance(
+                cmd,
+                &launch,
+                instance,
+                layers,
+                shared_fd.as_raw_fd(),
+                mmap_addr,
+            );
 
             event!(Level::INFO, "Cleaning up...");
             std::fs::remove_file(&lockfile).context("Failed to unlock instance")?;
@@ -182,7 +190,7 @@ fn main() -> anyhow::Result<()> {
                 download_layer_from_tracee(layer, &download)?;
             } else {
                 let (shared_fd, mmap_addr) = setup_shared_memory().context("Preparing ptrace")?;
-                download_image(image, &launch, download, shared_fd, mmap_addr)?;
+                download_image(image, &launch, download, shared_fd.as_raw_fd(), mmap_addr)?;
             }
             Ok(())
         }
@@ -316,7 +324,7 @@ fn download_image(
         args.push_os_strings(&mut new_args);
         cmd.args(new_args);
 
-        if let Err(e) = launch_ptrace(args2, cmd, fix_attach, shared_fd.clone(), mmap_addr) {
+        if let Err(e) = launch_ptrace(args2, cmd, fix_attach, shared_fd, mmap_addr) {
             bail!("Error: {:?}", e);
         }
     }
@@ -347,7 +355,7 @@ fn run_instance(
     };
 
     let cmd = std::process::Command::new(&cmd);
-    match launch_ptrace(args2, cmd, args.fix_attach, shared_fd.clone(), mmap_addr) {
+    match launch_ptrace(args2, cmd, args.fix_attach, shared_fd, mmap_addr) {
         Err(e) => bail!("Error: {:?}", e),
         Ok(ans) => Ok(ans),
     }

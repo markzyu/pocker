@@ -30,8 +30,7 @@ use nix::sys::mman;
 use nix::sys::wait;
 use nix::unistd;
 use std::convert::TryInto;
-use std::os::fd::AsRawFd;
-use std::os::fd::{OwnedFd, RawFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt;
 use std::process;
 use tracing::{Level, event};
@@ -66,7 +65,7 @@ pub struct PtraceSyscallInfo {
 
 /// Assumption: This function should only be called once.
 ///             So that it can safely initialize global, shared, mmap regions
-pub fn setup_shared_memory() -> Result<(RawFd, usize), PtraceError> {
+pub fn setup_shared_memory() -> Result<(OwnedFd, usize), PtraceError> {
     // Note: All FDs will auto close when dropped.
 
     // Open many empty FDs to at least make sure we get a high number as FD,
@@ -116,7 +115,7 @@ pub fn setup_shared_memory() -> Result<(RawFd, usize), PtraceError> {
         mmap_addr
     );
 
-    Ok((shared_fd.as_raw_fd(), mmap_addr))
+    Ok((shared_fd, mmap_addr))
 }
 
 pub fn start(cmd: &mut process::Command, no_attach: bool) -> Result<unistd::Pid, PtraceError> {
