@@ -54,7 +54,7 @@ jobs:
           architecture: 'x64' # optional x64 or x86. Defaults to x64 if not specified
 
       - name: Provide debug info for any failed tests
-        run: cat /usr/include/x86_64-linux-gnu/asm/unistd_64.h; echo ===========; cargo run -- --show-syscalls
+        run: cat /usr/include/x86_64-linux-gnu/asm/unistd_64.h; echo ===========; cargo run --bin pocker-runtime -- --show-syscalls
  
       - name: Run integration tests
         run: RUST_LOG=INFO bash tests.sh
