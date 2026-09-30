@@ -160,15 +160,17 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         metaname.push(".metadata");
         let mut metadir = rootfs.with_file_name(metaname);
 
-        // Case 1: The file is stored within the metadata dir
-        if let Ok(relative_path) = canonical_path.strip_prefix(&metadir) {
-            let Some(basename) = relative_path.file_name() else {
-                return Ok(None);
-            };
+        // Case 1: The file is a hardlink, whose target is stored within the metadata dir
+        if let Ok(Some(link_target_path)) = self._read_symlink(&canonical_path) {
+            if let Ok(relative_path) = link_target_path.strip_prefix(&metadir) {
+                let Some(basename) = relative_path.file_name() else {
+                    return Ok(None);
+                };
 
-            let mut basename = basename.to_os_string();
-            basename.push(".json");
-            return Ok(Some(relative_path.with_file_name(&basename)));
+                let mut basename = basename.to_os_string();
+                basename.push(".json");
+                return Ok(Some(relative_path.with_file_name(&basename)));
+            }
         }
 
         // Case 2: The file is stored in the rootfs dir
@@ -314,20 +316,27 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             }
         }
 
-        if let Ok(metadata) = std::fs::symlink_metadata(real_path) {
-            if !metadata.file_type().is_symlink() {
-                return Ok(Err(false));
-            }
-            let link = real_path.read_link().map_err(SysAugError::ReadSymlink)?;
-            if link.is_relative() {
-                return Ok(Err(false));
-            }
+        if let Some(link) = self._read_symlink(real_path)? {
             if visited.contains(&link) {
                 return Ok(Err(true));
             }
             return Ok(Ok(link));
         }
         Ok(Err(false))
+    }
+
+    fn _read_symlink(&self, path: &PathBuf) -> Result<Option<PathBuf>, SysAugError> {
+        if let Ok(metadata) = std::fs::symlink_metadata(real_path) {
+            if !metadata.file_type().is_symlink() {
+                return Ok(None);
+            }
+            let link = real_path.read_link().map_err(SysAugError::ReadSymlink)?;
+            if link.is_relative() {
+                return Ok(None);
+            }
+            return Ok(Some(link));
+        }
+        Ok(None)
     }
 
     // Same as calc_real_path_recurse
