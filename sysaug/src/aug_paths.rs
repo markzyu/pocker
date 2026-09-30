@@ -130,17 +130,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             }
         }
 
-        // TODO: Handle creation & deletion of hard links
-        //
-        // There are no symlinks being created in the rootfs. 'ln a b' will create a link in guest OS called "b" that's not visible from host
-        //
-        // Creation of the "b" link will only record the metadata for "b". (Metadata file for "b" exists in host OS)
-        //
-        // Every metadata of a hard link will contain a UUID. And for each uuid, there is /.metadata/hardLinkCounter/uuid json file
-        //   {count: 2, paths: ["/a", "/b"]}
-        //
-        // Upon deletion of /a, we RENAME "a" to "b" based on the path list. If no path is left, we delete it.
-
+        // Replace the arguments for chmod and chown, according to Rootfs configs
         if &syscall.sets_file_perms == &Some(PermType::Chown) {
             let position = &syscall
                 .file_perms_position
@@ -168,6 +158,43 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let regs = self.do_resume_syscall().await?;
         let retval = regs.syscall_retval() as isize;
 
+        self.on_chmod_chown_syscall_exit(syscall, &read_args, &save_paths)?;
+
+        if retval < 0 {
+            return Ok(());
+        }
+
+        self.on_stat_syscall_exit(syscall, &read_args, &save_paths).await?;
+        self.on_link_syscall_exit(syscall, &read_args, &save_paths)?;
+
+        if retval == 0 {
+            return Ok(());
+        }
+
+        match syscall.getdents_bits {
+            Some(32) => {
+                self.replace_getdents_result::<Dirent>(syscall, regs)
+                    .await?
+            }
+            Some(64) => {
+                self.replace_getdents_result::<Dirent64>(syscall, regs)
+                    .await?
+            }
+            _ => (),
+        };
+        Ok(())
+    }
+
+    /// handles both symlinks and hardlinks
+    fn on_link_syscall_exit(
+        &self, syscall: &SyscallInfo, read_args: &[usize], save_paths: &[Option<PathBuf>]
+    ) -> Result<(), SysAugError> {
+        Ok(())
+    }
+
+    fn on_chmod_chown_syscall_exit(
+        &self, syscall: &SyscallInfo, read_args: &[usize], save_paths: &[Option<PathBuf>]
+    ) -> Result<(), SysAugError> {
         if let Some(PermType::Chmod) = &syscall.sets_file_perms {
             let position = &syscall
                 .file_perms_position
@@ -223,7 +250,12 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 })?;
             }
         }
+        Ok(())
+    }
 
+    async fn on_stat_syscall_exit(
+        &self, syscall: &SyscallInfo, read_args: &[usize], save_paths: &[Option<PathBuf>]
+    ) -> Result<(), SysAugError> {
         let maybe_stat_path =
             save_paths
                 .iter()
@@ -231,10 +263,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 .ok_or(SysAugError::SyscallMissingField(
                     "stat syscalls don't have a corresponding path/fd to read from",
                 ));
-
-        if retval < 0 {
-            return Ok(());
-        }
 
         if let Some(position) = &syscall.stat_buf_position {
             let path = maybe_stat_path?.as_path();
@@ -266,22 +294,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             self.replace_statbuf_result::<libc::statx>(addr, path)
                 .await?;
         }
-
-        if retval == 0 {
-            return Ok(());
-        }
-
-        match syscall.getdents_bits {
-            Some(32) => {
-                self.replace_getdents_result::<Dirent>(syscall, regs)
-                    .await?
-            }
-            Some(64) => {
-                self.replace_getdents_result::<Dirent64>(syscall, regs)
-                    .await?
-            }
-            _ => (),
-        };
         Ok(())
     }
 
