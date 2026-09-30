@@ -355,7 +355,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
     define_dirfd_syscall!(libc::SYS_faccessat, 2, 0, iter, next);
     define_dirfd2_syscall!(libc::SYS_linkat, 10, iter, next);
     if let Some(val) = iter[next].as_mut() {
-        val.creates_hardlink = true;
+        val.creates_hardlink = Some(3);
     }
 
     define_dirfd_fileperms_syscall!(libc::SYS_fchmodat, 2, 0, PermType::Chmod, 2, iter, next);
@@ -388,7 +388,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
     define_dirfd_syscall!(libc::SYS_symlinkat, 4, 1, iter, next);
     if let Some(val) = iter[next].as_mut() {
         val.dont_follow_symlink = true;
-        val.creates_symlink = true;
+        val.creates_symlink = Some(2);
     }
 
     define_dirfd_deletion_syscall!(libc::SYS_unlinkat, 2, 0, DelType::File, iter, next);
@@ -529,7 +529,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         define_dirfd_syscall!(libc::SYS_futimesat, 2, 0, iter, next);
         define_paths_syscall!(libc::SYS_link, 3, iter, next);
         if let Some(val) = iter[next].as_mut() {
-            val.creates_hardlink = true;
+            val.creates_hardlink = Some(1);
         }
 
         define_paths_syscall!(libc::SYS_open, 1, iter, next);
@@ -564,7 +564,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         define_paths_syscall!(libc::SYS_symlink, 2, iter, next);
         if let Some(val) = iter[next].as_mut() {
             val.dont_follow_symlink = true;
-            val.creates_symlink = true;
+            val.creates_symlink = Some(1);
         }
 
         define_paths_deletion_syscall!(libc::SYS_unlink, 1, DelType::File, iter, next);

@@ -270,8 +270,10 @@ pub struct SyscallInfo {
     pub deletion_type: Option<DelType>,
     pub dont_follow_symlink: bool,
     pub flag_dont_follow_symlink: Option<usize>,
-    pub creates_symlink: bool,
-    pub creates_hardlink: bool,
+
+    /// The register storing the location of the link name
+    pub creates_symlink: Option<u8>,
+    pub creates_hardlink: Option<u8>,
 
     /// true -> setuid/setgid, false -> getuid/getgid
     pub is_setter: bool,
@@ -305,8 +307,8 @@ pub const fn default_syscall_info() -> SyscallInfo {
         deletion_type: None,
         dont_follow_symlink: false,
         flag_dont_follow_symlink: None,
-        creates_symlink: false,
-        creates_hardlink: false,
+        creates_symlink: None,
+        creates_hardlink: None,
         is_setter: false,
         res_bits: 0,
         resf_bit: None,
