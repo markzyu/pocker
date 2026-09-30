@@ -356,6 +356,8 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
     define_dirfd2_syscall!(libc::SYS_linkat, 10, iter, next);
     if let Some(val) = iter[next].as_mut() {
         val.creates_hardlink = Some(3);
+        val.hardlink_complex_downgrade = Some(libc::SYS_symlinkat as usize);
+        val.hardlink_flag_position = Some(4);
     }
 
     define_dirfd_fileperms_syscall!(libc::SYS_fchmodat, 2, 0, PermType::Chmod, 2, iter, next);
@@ -530,6 +532,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         define_paths_syscall!(libc::SYS_link, 3, iter, next);
         if let Some(val) = iter[next].as_mut() {
             val.creates_hardlink = Some(1);
+            val.hardlink_simple_downgrade = Some(libc::SYS_symlink as usize);
         }
 
         define_paths_syscall!(libc::SYS_open, 1, iter, next);

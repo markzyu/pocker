@@ -289,6 +289,13 @@ pub struct SyscallInfo {
     /// which must check `RootfsMetadata::hardlink_counter` before removing metadata.
     pub creates_hardlink: Option<u8>,
 
+    /// System call number for symlink(), which has the same arguments as link()
+    pub hardlink_simple_downgrade: Option<usize>,
+    /// System call number for symlinkat(), which requires rewriting argument from linkat()
+    pub hardlink_complex_downgrade: Option<usize>,
+    /// The register position for `flags` argument of `linkat()`
+    pub hardlink_flag_position: Option<u8>,
+
     /// true -> setuid/setgid, false -> getuid/getgid
     pub is_setter: bool,
     /// a bitmask of Real/Effective/SavedSet/FileSystem/IsUid flags (from 0 to 31). One call can set multiple flags at once.
@@ -323,6 +330,9 @@ pub const fn default_syscall_info() -> SyscallInfo {
         flag_dont_follow_symlink: None,
         creates_symlink: None,
         creates_hardlink: None,
+        hardlink_simple_downgrade: None,
+        hardlink_complex_downgrade: None,
+        hardlink_flag_position: None,
         is_setter: false,
         res_bits: 0,
         resf_bit: None,

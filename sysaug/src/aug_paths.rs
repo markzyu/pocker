@@ -164,7 +164,8 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             return Ok(());
         }
 
-        self.on_stat_syscall_exit(syscall, &read_args, &save_paths).await?;
+        self.on_stat_syscall_exit(syscall, &read_args, &save_paths)
+            .await?;
         self.on_link_syscall_exit(syscall, &read_args, &save_paths)?;
 
         if retval == 0 {
@@ -187,13 +188,37 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
     /// handles both symlinks and hardlinks
     fn on_link_syscall_exit(
-        &self, syscall: &SyscallInfo, read_args: &[usize], save_paths: &[Option<PathBuf>]
+        &self,
+        syscall: &SyscallInfo,
+        _args: &[usize],
+        save_paths: &[Option<PathBuf>],
     ) -> Result<(), SysAugError> {
+        if let Some(i) = syscall.creates_symlink {
+            let i = i as usize;
+            if let Some(path) = save_paths[i].as_ref() {
+                self.save_metadata_for_file(path, |x| x.is_symlink = Some(true))?;
+            }
+        }
+        if let Some(i) = syscall.creates_hardlink {
+            let i = i as usize;
+            if let Some(path) = save_paths[i].as_ref() {
+                self.save_metadata_for_file(path, |x| {
+                    if let Some(count) = x.hardlink_counter {
+                        x.hardlink_counter = Some(count + 1);
+                    } else {
+                        x.hardlink_counter = Some(1);
+                    }
+                })?;
+            }
+        }
         Ok(())
     }
 
     fn on_chmod_chown_syscall_exit(
-        &self, syscall: &SyscallInfo, read_args: &[usize], save_paths: &[Option<PathBuf>]
+        &self,
+        syscall: &SyscallInfo,
+        read_args: &[usize],
+        save_paths: &[Option<PathBuf>],
     ) -> Result<(), SysAugError> {
         if let Some(PermType::Chmod) = &syscall.sets_file_perms {
             let position = &syscall
@@ -254,7 +279,10 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     }
 
     async fn on_stat_syscall_exit(
-        &self, syscall: &SyscallInfo, read_args: &[usize], save_paths: &[Option<PathBuf>]
+        &self,
+        syscall: &SyscallInfo,
+        read_args: &[usize],
+        save_paths: &[Option<PathBuf>],
     ) -> Result<(), SysAugError> {
         let maybe_stat_path =
             save_paths
