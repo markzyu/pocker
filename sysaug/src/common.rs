@@ -273,6 +273,18 @@ pub struct SyscallInfo {
 
     /// The register storing the location of the link name
     pub creates_symlink: Option<u8>,
+
+    /// A note on hardlinks:
+    ///
+    /// None of system calls should "follow hardlink". (the syscall args shouldn't)
+    ///
+    /// However, the metadata should be updated. So if someone `rename(link_a, b)`,
+    /// It shouldn't send a system call to rename the `.metadata/links/id` to `b`.
+    /// But it should rename the `link_a` (symlink).
+    ///
+    /// And for metadata, it's mostly straightforward: just write it all to
+    /// `.metadata/links/id.json`. However, this isn't the case for `unlink()`,
+    /// which must check `RootfsMetadata::hardlink_counter` before removing metadata.
     pub creates_hardlink: Option<u8>,
 
     /// true -> setuid/setgid, false -> getuid/getgid
