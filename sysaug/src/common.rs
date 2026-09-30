@@ -216,6 +216,11 @@ pub struct RootFsMetadata {
     pub chmod: Option<usize>,
     pub chown_owner: Option<usize>,
     pub chown_group: Option<usize>,
+
+    pub is_symlink: Option<bool>,
+
+    /// This is set if and only if the file is a hard link
+    pub hardlink_counter: Option<usize>,
 }
 
 // ------------------- SYSCALLS -------------------
@@ -265,6 +270,8 @@ pub struct SyscallInfo {
     pub deletion_type: Option<DelType>,
     pub dont_follow_symlink: bool,
     pub flag_dont_follow_symlink: Option<usize>,
+    pub creates_symlink: bool,
+    pub creates_hardlink: bool,
 
     /// true -> setuid/setgid, false -> getuid/getgid
     pub is_setter: bool,
@@ -298,6 +305,8 @@ pub const fn default_syscall_info() -> SyscallInfo {
         deletion_type: None,
         dont_follow_symlink: false,
         flag_dont_follow_symlink: None,
+        creates_symlink: false,
+        creates_hardlink: false,
         is_setter: false,
         res_bits: 0,
         resf_bit: None,

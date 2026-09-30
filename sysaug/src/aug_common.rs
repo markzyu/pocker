@@ -150,25 +150,35 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         if !path.exists() {
             return Ok(None);
         }
-        let canonical_path = path.canonicalize();
-        if canonical_path.is_err() {
-            return Ok(None);
-        }
-        let canonical_path_unwrap = canonical_path.unwrap();
 
+        let Ok(canonical_path) = path.canonicalize() else {
+            return Ok(None);
+        };
+
+        // This unwrap() works on the assumption that args.rootfs is a canonicalized path
         let mut metaname = rootfs.file_name().unwrap().to_os_string();
         metaname.push(".metadata");
         let mut metadir = rootfs.with_file_name(metaname);
-        metadir.push("rootfs");
 
-        let relative_path = canonical_path_unwrap.strip_prefix(rootfs);
-        if relative_path.is_err() {
-            return Ok(None);
+        // Case 1: The file is stored within the metadata dir
+        if let Ok(relative_path) = canonical_path.strip_prefix(&metadir) {
+            let Some(basename) = relative_path.file_name() else {
+                return Ok(None);
+            };
+
+            let mut basename = basename.to_os_string();
+            basename.push(".json");
+            return Ok(Some(relative_path.with_file_name(&basename)));
         }
-        let relative_path_unwrap = relative_path.unwrap();
+
+        // Case 2: The file is stored in the rootfs dir
+        metadir.push("rootfs");
+        let Ok(relative_path) = canonical_path.strip_prefix(rootfs) else {
+            return Ok(None);
+        };
 
         metadir.push("chld");
-        for component in relative_path_unwrap.components() {
+        for component in relative_path.components() {
             if component == Component::CurDir {
                 continue;
             }
