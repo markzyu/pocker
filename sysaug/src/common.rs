@@ -217,9 +217,11 @@ pub struct RootFsMetadata {
     pub chown_owner: Option<usize>,
     pub chown_group: Option<usize>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub is_symlink: Option<bool>,
 
     /// This is set if and only if the file is a hard link
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub hardlink_counter: Option<usize>,
 }
 

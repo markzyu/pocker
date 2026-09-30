@@ -326,11 +326,11 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     }
 
     fn _read_symlink(&self, path: &PathBuf) -> Result<Option<PathBuf>, SysAugError> {
-        if let Ok(metadata) = std::fs::symlink_metadata(real_path) {
+        if let Ok(metadata) = std::fs::symlink_metadata(path) {
             if !metadata.file_type().is_symlink() {
                 return Ok(None);
             }
-            let link = real_path.read_link().map_err(SysAugError::ReadSymlink)?;
+            let link = path.read_link().map_err(SysAugError::ReadSymlink)?;
             if link.is_relative() {
                 return Ok(None);
             }
