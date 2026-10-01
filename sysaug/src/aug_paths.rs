@@ -58,6 +58,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             &mut orig_regs.arg4,
         ];
         let mut need_write_regs = false;
+        let mut need_write_paths: usize = 0;
         let mut need_skip_syscall: Option<usize> = None;
         let mut save_paths: [Option<PathBuf>; 4] = Default::default();
         for i in 0..read_args.len() {
@@ -93,7 +94,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                         dirfd_path.join(&new_path_val)
                     };
                     save_paths[i] = Some(input_path);
-                    need_write_regs = true;
+                    need_write_paths |= check_bit;
                 }
                 PathAction::ELOOP => {
                     self.do_skip_syscall(-libc::ELOOP as usize).await?;
@@ -213,12 +214,18 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             }
         }
 
-        if need_write_regs && need_skip_syscall.is_none() {
-            for i in 0..save_paths.len() {
-                if let Some(path) = save_paths[i].as_ref() {
-                    *write_args[i] = self.tracee_stack_append_path(path.clone())?;
-                }
+        // Write new paths and args into register
+        for i in 0..read_args.len() {
+            let check_bit: usize = 1 << i;
+            if (need_write_paths & check_bit) == 0 {
+                continue;
             }
+            if let Some(path) = save_paths[i].as_ref() {
+                *write_args[i] = self.tracee_stack_append_path(path.clone())?;
+                need_write_regs = true;
+            }
+        }
+        if need_write_regs && need_skip_syscall.is_none() {
             // Update registers, before real syscall
             ptrace_client.execute(move || setregs(pid, orig_regs))??;
         }
