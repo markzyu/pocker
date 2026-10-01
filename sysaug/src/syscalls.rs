@@ -388,8 +388,9 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
 
     define_dirfd2_syscall!(libc::SYS_renameat2, 10, iter, next);
     if let Some(val) = iter[next].as_mut() {
+        // This is a special case where the flags don't determine symlink behavior
+        val.dont_follow_symlink = true;
         val.flags = Some(4);
-        val.flag_dont_follow_symlink = Some(libc::AT_SYMLINK_NOFOLLOW as usize);
         val.renames_metadata = Some((1, 3));
     }
 
