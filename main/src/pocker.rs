@@ -264,10 +264,14 @@ fn download_image(
     // 2. Execute the future, blocking the current thread until completion
     let image: anyhow::Result<_> = rt.block_on(async {
         let client = get_oci_client();
-        let reference_str = format!(
-            "{}/{}/{}",
-            args.registry_host, args.registry_namespace, &image_name
-        );
+        let reference_str = if image_name.contains('/') {
+            format!("{}/{}", args.registry_host, &image_name)
+        } else {
+            format!(
+                "{}/{}/{}",
+                args.registry_host, args.registry_namespace, &image_name
+            )
+        };
         let reference: oci_client::Reference = reference_str.parse()?;
         let auth = oci_client::secrets::RegistryAuth::Anonymous;
         let image = client
