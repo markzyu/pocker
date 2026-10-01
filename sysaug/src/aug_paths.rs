@@ -475,6 +475,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let mut is_delete: Vec<bool> = Vec::new();
         for entry in dirents.iter_mut() {
             event!(Level::TRACE, "Intercepting {:?}", entry);
+            entry.normalize_type();
             let orig_path_buf = Self::path_from_bytes(entry.get_name().to_vec())?;
             let orig_path: &Path = orig_path_buf.as_path();
             let action = self
@@ -568,6 +569,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
 trait IDirent: pocker_ptrace::CStruct + std::fmt::Debug {
     fn get_name(&mut self) -> &mut [u8];
+    fn normalize_type(&mut self);
 }
 
 #[derive(Debug, Clone)]
@@ -605,9 +607,18 @@ struct DirentHeader {
     pub reclen: libc::c_ushort,
 }
 
+const DT_UNKNOWN: u8 = 0;
+const DT_LNK: u8 = 10;
+
 impl IDirent for Dirent64 {
     fn get_name(&mut self) -> &mut [u8] {
         &mut self.name
+    }
+
+    fn normalize_type(&mut self) {
+        if self.type_ == DT_LNK {
+            self.type_ = DT_UNKNOWN;
+        }
     }
 }
 impl pocker_ptrace::CStruct for Dirent64 {
@@ -626,6 +637,9 @@ impl pocker_ptrace::CHeader for Dirent64Header {
 impl IDirent for Dirent {
     fn get_name(&mut self) -> &mut [u8] {
         &mut self.name
+    }
+
+    fn normalize_type(&mut self) {
     }
 }
 impl pocker_ptrace::CStruct for Dirent {
