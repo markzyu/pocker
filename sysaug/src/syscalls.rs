@@ -355,9 +355,9 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
     define_dirfd_syscall!(libc::SYS_faccessat, 2, 0, iter, next);
     define_dirfd2_syscall!(libc::SYS_linkat, 10, iter, next);
     if let Some(val) = iter[next].as_mut() {
-        val.creates_hardlink = Some(3);
-        val.hardlink_complex_downgrade = Some(libc::SYS_symlinkat as usize);
-        val.hardlink_flag_position = Some(4);
+        val.creates_hardlink = Some((1, 3));
+        val.flags = Some(4);
+        val.flag_dont_follow_symlink = Some(libc::AT_SYMLINK_NOFOLLOW as usize);
     }
 
     define_dirfd_fileperms_syscall!(libc::SYS_fchmodat, 2, 0, PermType::Chmod, 2, iter, next);
@@ -390,7 +390,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
     define_dirfd_syscall!(libc::SYS_symlinkat, 4, 1, iter, next);
     if let Some(val) = iter[next].as_mut() {
         val.dont_follow_symlink = true;
-        val.creates_symlink = Some(2);
+        val.creates_symlink = Some((0, 2));
     }
 
     define_dirfd_deletion_syscall!(libc::SYS_unlinkat, 2, 0, DelType::File, iter, next);
@@ -531,8 +531,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         define_dirfd_syscall!(libc::SYS_futimesat, 2, 0, iter, next);
         define_paths_syscall!(libc::SYS_link, 3, iter, next);
         if let Some(val) = iter[next].as_mut() {
-            val.creates_hardlink = Some(1);
-            val.hardlink_simple_downgrade = Some(libc::SYS_symlink as usize);
+            val.creates_hardlink = Some((0, 1));
         }
 
         define_paths_syscall!(libc::SYS_open, 1, iter, next);
@@ -567,7 +566,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         define_paths_syscall!(libc::SYS_symlink, 2, iter, next);
         if let Some(val) = iter[next].as_mut() {
             val.dont_follow_symlink = true;
-            val.creates_symlink = Some(1);
+            val.creates_symlink = Some((0, 1));
         }
 
         define_paths_deletion_syscall!(libc::SYS_unlink, 1, DelType::File, iter, next);

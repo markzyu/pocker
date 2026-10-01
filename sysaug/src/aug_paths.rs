@@ -18,11 +18,15 @@ use pocker_ptrace::{
     write_fixed_sized_objs_to_tracee, write_structs_to_tracee,
 };
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use tracing::{Level, event};
 
 /// Per Linux inode.7 documentation, stx_mode needs a mask, if we only want to manipulate chmod
 const FILE_PERMS_MASK: usize = 0o7777;
+
+const EACCES: usize = -libc::EACCES as usize;
+const EEXIST: usize = -libc::EEXIST as usize;
 
 impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceClient> {
     pub async fn augment_sys_paths(
@@ -54,6 +58,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             &mut orig_regs.arg4,
         ];
         let mut need_write_regs = false;
+        let mut need_skip_syscall: Option<usize> = None;
         let mut save_paths: [Option<PathBuf>; 4] = Default::default();
         for (i, ref_arg_i) in write_args.iter_mut().enumerate() {
             let check_bit: usize = 1 << i;
@@ -150,13 +155,53 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             need_write_regs = true;
         }
 
-        if need_write_regs {
+        // Create hardlinks by (1) moving the original file (2) creating two symlinks (3) skip system call
+        if let Some((i, j)) = syscall.creates_hardlink
+            && let Some(metadir) = self.get_metadata_dir()
+        {
+            let i = i as usize;
+            let j = j as usize;
+            if let Some(path) = save_paths[i].as_ref()
+                && path.exists()
+            {
+                let target_path = if path.starts_with(&metadir) {
+                    self.save_metadata_for_file(path, |x| {
+                        x.hardlink_counter = x.hardlink_counter.map(|x| x + 1)
+                    })?;
+                    path.clone()
+                } else {
+                    let links_dir = metadir.join("links");
+                    let target_path = links_dir.join(uuid::Uuid::new_v4().to_string());
+                    std::fs::rename(path, &target_path).map_err(SysAugError::CreateHardlinkIO)?;
+                    symlink(&target_path, path).map_err(SysAugError::CreateHardlinkIO)?;
+                    target_path
+                };
+                if !path.starts_with(self.consts.args.rootfs.as_ref().unwrap()) {
+                    need_skip_syscall.replace(EACCES);
+                } else if path.exists() {
+                    need_skip_syscall.replace(EEXIST);
+                } else {
+                    let result_path = save_paths[j].as_ref().unwrap();
+                    symlink(&target_path, result_path).map_err(SysAugError::CreateHardlinkIO)?;
+                    need_skip_syscall.replace(0);
+                }
+            }
+        }
+
+        if need_write_regs && need_skip_syscall.is_none() {
             // Update registers, before real syscall
             ptrace_client.execute(move || setregs(pid, orig_regs))??;
         }
 
-        let regs = self.do_resume_syscall().await?;
-        let retval = regs.syscall_retval() as isize;
+        let (regs, retval) = if let Some(retval) = need_skip_syscall {
+            self.do_skip_syscall(retval).await?;
+            (None as Option<GenericPurposeRegs>, retval)
+        } else {
+            let regs = self.do_resume_syscall().await?;
+            let retval = regs.syscall_retval();
+            (Some(regs), retval)
+        };
+        let retval = retval as isize;
 
         self.on_chmod_chown_syscall_exit(syscall, &read_args, &save_paths)?;
 
@@ -172,17 +217,19 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             return Ok(());
         }
 
-        match syscall.getdents_bits {
-            Some(32) => {
-                self.replace_getdents_result::<Dirent>(syscall, regs)
-                    .await?
-            }
-            Some(64) => {
-                self.replace_getdents_result::<Dirent64>(syscall, regs)
-                    .await?
-            }
-            _ => (),
-        };
+        if let Some(regs) = regs {
+            match syscall.getdents_bits {
+                Some(32) => {
+                    self.replace_getdents_result::<Dirent>(syscall, regs)
+                        .await?
+                }
+                Some(64) => {
+                    self.replace_getdents_result::<Dirent64>(syscall, regs)
+                        .await?
+                }
+                _ => (),
+            };
+        }
         Ok(())
     }
 
@@ -193,13 +240,13 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         _args: &[usize],
         save_paths: &[Option<PathBuf>],
     ) -> Result<(), SysAugError> {
-        if let Some(i) = syscall.creates_symlink {
+        if let Some((_, i)) = syscall.creates_symlink {
             let i = i as usize;
             if let Some(path) = save_paths[i].as_ref() {
                 self.save_metadata_for_file(path, |x| x.is_symlink = Some(true))?;
             }
         }
-        if let Some(i) = syscall.creates_hardlink {
+        if let Some((_, i)) = syscall.creates_hardlink {
             let i = i as usize;
             if let Some(path) = save_paths[i].as_ref() {
                 self.save_metadata_for_file(path, |x| {

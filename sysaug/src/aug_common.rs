@@ -138,27 +138,34 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(())
     }
 
-    fn __resolve_metadata_path(&self, path: &Path) -> Result<Option<PathBuf>, SysAugError> {
+    pub fn get_metadata_dir(&self) -> Option<PathBuf> {
         let args = &self.consts.args;
         let Some(rootfs) = args.rootfs.as_ref() else {
-            return Ok(None);
+            return None;
         };
         if rootfs == Path::new("/") {
             // If setting real root as chroot/rootfs, don't create metadata
-            return Ok(None);
+            return None;
         }
-        if !path.exists() {
-            return Ok(None);
-        }
-
-        let Ok(canonical_path) = path.canonicalize() else {
-            return Ok(None);
-        };
 
         // This unwrap() works on the assumption that args.rootfs is a canonicalized path
         let mut metaname = rootfs.file_name().unwrap().to_os_string();
         metaname.push(".metadata");
-        let mut metadir = rootfs.with_file_name(metaname);
+        let metadir = rootfs.with_file_name(metaname);
+        Some(metadir)
+    }
+
+    fn __resolve_metadata_path(&self, path: &Path) -> Result<Option<PathBuf>, SysAugError> {
+        let Some(mut metadir) = self.get_metadata_dir() else {
+            return Ok(None);
+        };
+
+        if !path.exists() {
+            return Ok(None);
+        }
+        let Ok(canonical_path) = path.canonicalize() else {
+            return Ok(None);
+        };
 
         // Case 1: The file is a hardlink, whose target is stored within the metadata dir
         if let Ok(Some(link_target_path)) = self._read_symlink(&canonical_path) {
@@ -175,6 +182,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
         // Case 2: The file is stored in the rootfs dir
         metadir.push("rootfs");
+        let rootfs = self.consts.args.rootfs.as_ref().unwrap();
         let Ok(relative_path) = canonical_path.strip_prefix(rootfs) else {
             return Ok(None);
         };

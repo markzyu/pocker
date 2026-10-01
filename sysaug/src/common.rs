@@ -157,6 +157,9 @@ pub enum SysAugError {
 
     #[error("Internal error: bad syscall config: {0}")]
     SyscallMissingField(&'static str),
+
+    #[error("Failed to create hardlink: {0}")]
+    CreateHardlinkIO(std::io::Error),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -273,8 +276,8 @@ pub struct SyscallInfo {
     pub dont_follow_symlink: bool,
     pub flag_dont_follow_symlink: Option<usize>,
 
-    /// The register storing the location of the link name
-    pub creates_symlink: Option<u8>,
+    /// The register storing the location of the link target and link name
+    pub creates_symlink: Option<(u8, u8)>,
 
     /// A note on hardlinks:
     ///
@@ -287,14 +290,7 @@ pub struct SyscallInfo {
     /// And for metadata, it's mostly straightforward: just write it all to
     /// `.metadata/links/id.json`. However, this isn't the case for `unlink()`,
     /// which must check `RootfsMetadata::hardlink_counter` before removing metadata.
-    pub creates_hardlink: Option<u8>,
-
-    /// System call number for symlink(), which has the same arguments as link()
-    pub hardlink_simple_downgrade: Option<usize>,
-    /// System call number for symlinkat(), which requires rewriting argument from linkat()
-    pub hardlink_complex_downgrade: Option<usize>,
-    /// The register position for `flags` argument of `linkat()`
-    pub hardlink_flag_position: Option<u8>,
+    pub creates_hardlink: Option<(u8, u8)>,
 
     /// true -> setuid/setgid, false -> getuid/getgid
     pub is_setter: bool,
@@ -330,9 +326,6 @@ pub const fn default_syscall_info() -> SyscallInfo {
         flag_dont_follow_symlink: None,
         creates_symlink: None,
         creates_hardlink: None,
-        hardlink_simple_downgrade: None,
-        hardlink_complex_downgrade: None,
-        hardlink_flag_position: None,
         is_setter: false,
         res_bits: 0,
         resf_bit: None,
