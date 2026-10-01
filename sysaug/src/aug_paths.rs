@@ -708,7 +708,7 @@ impl IStat for libc::stat {
     }
 
     fn set_hardlink_counter(&mut self, val: usize) {
-        self.st_nlink = val as u64;
+        self.st_nlink = val as libc::nlink_t;
     }
 }
 
@@ -730,7 +730,7 @@ impl IStat for libc::stat64 {
     }
 
     fn set_hardlink_counter(&mut self, val: usize) {
-        self.st_nlink = val as u64;
+        self.st_nlink = val as libc::nlink_t;
     }
 }
 
