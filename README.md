@@ -8,6 +8,11 @@ My project is still in its early stage. It barely works right now. Basic shell c
 
 My goal is to run OCI containers on modern Android devices, without rooting the phone, without a full Linux VM, by creating an accompanying configuration file that tells the ptrace how to glue the file system back together.
 
+```
+cargo build
+LD_PRELOAD="" ./target/debug/pocker run alpine   # It's required to unset LD_PRELOAD, especially for use with Termux
+```
+
 ## Multi-threading mode 
 
 By default, pocker will try to run ptrace() syscalls on dedicated threads (one thread per tracee process)
@@ -56,7 +61,7 @@ cd /
 How to debug problems:
 
 ```bash
-RUST_LOG=TRACE RUST_LOG_BLOCKING=1 RUST_LOG_NO_COLOR=1 RUST_BACKTRACE=1 RUST_LOG_DIR=~/.logs cargo run  -- --chroot xxx --root | grep -v TRACE | grep -v DEBUG
+RUST_LOG=TRACE RUST_LOG_BLOCKING=1 RUST_LOG_NO_COLOR=1 RUST_BACKTRACE=1 RUST_LOG_DIR=~/.logs cargo run --bin pocker-runtime -- --chroot ./xxx --root | grep -v TRACE | grep -v DEBUG
 
 # Verbose debug logs will show up in both stderr, and in the ~/.logs/ folder
 ```
