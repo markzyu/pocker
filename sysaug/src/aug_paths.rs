@@ -235,20 +235,19 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let i = i as usize;
             let j = j as usize;
             if let Some(path1) = save_paths[i].as_ref()
-                && let path1 = path1
-                    .canonicalize()
-                    .map_err(SysAugError::CreateHardlinkIO)?
+                && let Ok(path1) = path1.canonicalize()
                 && path1.exists()
                 && let Some(path2) = save_paths[j].as_ref()
-                && let path2 = path2
-                    .canonicalize()
-                    .map_err(SysAugError::CreateHardlinkIO)?
+                && let Ok(path2) = path2.canonicalize()
                 && path2.exists()
             {
                 let is_hardlink1 = path1.starts_with(&metadir);
                 let is_hardlink2 = path2.starts_with(&metadir);
                 if is_hardlink1 && is_hardlink2 && path1 == path2 {
                     need_skip_syscall.replace(0);
+                } else if is_hardlink2 {
+                    // Decrease reference counter by 1
+                    self.delete_metadata_for_file(path2.as_path())?;
                 }
             }
         }
@@ -317,26 +316,17 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         _args: &[usize],
         save_paths: &[Option<PathBuf>],
     ) -> Result<(), SysAugError> {
-        // Skip metadata changes if we renamed two hardlinks of the same content
-        if let Some((i, j)) = syscall.renames_metadata
+        // First, check for hardlinks
+        // Reminder: This is different from on_syscall_enter because files changed
+        if let Some((_, j)) = syscall.renames_metadata
             && let Some(metadir) = self.get_metadata_dir()
         {
-            let i = i as usize;
             let j = j as usize;
-            if let Some(path1) = save_paths[i].as_ref()
-                && let path1 = path1
-                    .canonicalize()
-                    .map_err(SysAugError::CreateHardlinkIO)?
-                && path1.exists()
-                && let Some(path2) = save_paths[j].as_ref()
-                && let path2 = path2
-                    .canonicalize()
-                    .map_err(SysAugError::CreateHardlinkIO)?
-                && path2.exists()
+            if let Some(path2) = save_paths[j].as_ref()
+                && let Ok(path2) = path2.canonicalize()
             {
-                let is_hardlink1 = path1.starts_with(&metadir);
                 let is_hardlink2 = path2.starts_with(&metadir);
-                if is_hardlink1 && is_hardlink2 && path1 == path2 {
+                if is_hardlink2 {
                     return Ok(());
                 }
             }

@@ -221,12 +221,37 @@ class TestRootFs(t.TestCase):
         self.assertEqual(self._read_hardlink_counter(), 2)
         self.compare_tar_with_dir(STAGING, "1c-rootfs-hardlinks-rename.tar")
 
-    def test_chroot_hardlink_rename_overlap(self):
-        ans = c.run_elf_chroot("tests/fixtures/1d-hardlink-rename-overlap.out", env=DEBUGENV)
+    def test_chroot_hardlink_rename_overlap1(self):
+        """
+        Rename /x to /y, but /y is already a hardlink to /x (NOOP)
+        """
+        ans = c.run_elf_chroot("tests/fixtures/1d-hardlink-rename-overlap.out")
         self.assertEqual(ans.returncode, 0)
         self.assertEqual(self._read_hardlink_counter(), 2)
         self.assertTrue(os.path.exists(f"{STAGING}/x"))
         self.assertTrue(os.path.exists(f"{STAGING}/y"))
+
+    def test_chroot_hardlink_rename_overlap2(self):
+        """
+        Rename /a to /y, when /y is already a hardlink to /x
+        """
+        ans = c.run_elf_chroot("tests/fixtures/1d-hardlink-rename-overlap2.out")
+        self.assertEqual(ans.returncode, 0)
+        self.assertEqual(self._read_hardlink_counter(), 1)
+        self.assertTrue(not os.path.exists(f"{STAGING}/a"))
+        self.assertTrue(os.path.exists(f"{STAGING}/x"))
+        self.assertTrue(os.path.exists(f"{STAGING}/y"))
+
+    def test_chroot_hardlink_rename_overlap3(self):
+        """
+        Rename /y to /a, when /y is already a hardlink to /x
+        """
+        ans = c.run_elf_chroot("tests/fixtures/1d-hardlink-rename-overlap3.out")
+        self.assertEqual(ans.returncode, 0)
+        self.assertEqual(self._read_hardlink_counter(), 2)
+        self.assertTrue(os.path.exists(f"{STAGING}/a"))
+        self.assertTrue(os.path.exists(f"{STAGING}/x"))
+        self.assertTrue(not os.path.exists(f"{STAGING}/y"))
 
     def test_rootfs_hardlink_copy(self):
         cmd = f"""
