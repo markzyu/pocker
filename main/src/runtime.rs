@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use tracing::{Level, event};
 
 #[derive(Parser, Debug)]
-#[command(version = "0.2.0", author = "Zhongzhi Yu")]
+#[command(version = "0.3.0", author = "Zhongzhi Yu")]
 pub struct CLIArgs {
     /// Trace syscalls like strace (slow). Not all syscalls are supported.
     #[arg(long)]

@@ -1,7 +1,7 @@
 [package]
 name = "pocker"
 description = "A multithreaded incomplete rewrite of proot, from scratch, just for fun. (The p stands for ptrace)"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Zhongzhi Yu <7296488+markzyu@users.noreply.github.com>"]
 repository = "https://github.com/markzyu/pocker"
 license = "GPL-3.0-or-later"
@@ -21,10 +21,10 @@ workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-pocker-executor = {path = "../executor", version = "0.2"}
-pocker-procfs = {path = "../procfs", version = "0.2"}
-pocker-ptrace = {path = "../ptrace", version = "0.2"}
-pocker-sysaug = {path = "../sysaug", version = "0.2"}
+pocker-executor = {path = "../executor", version = "0.3"}
+pocker-procfs = {path = "../procfs", version = "0.3"}
+pocker-ptrace = {path = "../ptrace", version = "0.3"}
+pocker-sysaug = {path = "../sysaug", version = "0.3"}
 
 anyhow = "1.0.104"
 bytes = "1.12"

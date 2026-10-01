@@ -31,7 +31,7 @@ const LAYER_TYPE_TAR_GZ: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
 const LOCKFILE_RUNNING: &str = ".pocker-running";
 
 #[derive(Parser, Debug)]
-#[command(version = "0.2.0", author = "Zhongzhi Yu")]
+#[command(version = "0.3.0", author = "Zhongzhi Yu")]
 struct CLIArgs {
     #[command(subcommand)]
     commands: Commands,
