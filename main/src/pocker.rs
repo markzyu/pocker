@@ -18,9 +18,9 @@ use oci_client::{
     manifest::ImageIndexEntry,
 };
 use oci_spec::image::{Arch, Os};
-use pocker::{CLIError, LaunchOptions, canonicalize_clone, init_logging, launch_ptrace};
+use pocker::{LaunchOptions, init_logging, launch_ptrace};
 use pocker_ptrace::setup_shared_memory;
-use pocker_sysaug::{PermsMode, RAW_SYSCALL_INFOS, SysAugArgs};
+use pocker_sysaug::{PermsMode, SysAugArgs};
 use std::os::fd::AsRawFd;
 use std::{ffi::OsString, io::Write};
 use std::{os::fd::RawFd, path::PathBuf};
@@ -39,7 +39,24 @@ struct CLIArgs {
 
 #[derive(Clone, Debug, Subcommand)]
 enum Commands {
+    /// Download a container from image name, and unarchive with fake permissions in mind
+    Download {
+        /// The name of the container image
+        image: String,
+
+        /// This is an internal option. Please do not use it unless you know what you're doing.
+        #[arg(long)]
+        internal_layer: Option<String>,
+
+        #[command(flatten)]
+        launch: LaunchOptions,
+
+        #[command(flatten)]
+        download: ImageDownloadArgs,
+    },
     /// Download and run a container from image name
+    /// (This is a hidden command for now, because overlay fs is not ready)
+    #[command(hide = true)]
     Run {
         /// The name of the container image
         image: String,
@@ -50,21 +67,6 @@ enum Commands {
         /// Give a different name to this instance of the container
         #[arg(long)]
         name: Option<String>,
-
-        #[command(flatten)]
-        launch: LaunchOptions,
-
-        #[command(flatten)]
-        download: ImageDownloadArgs,
-    },
-    /// Download a container from image name, and unarchive with fake permissions in mind
-    Download {
-        /// The name of the container image
-        image: String,
-
-        /// This is an internal option. Please do not use it unless you know what you're doing.
-        #[arg(long)]
-        internal_layer: Option<String>,
 
         #[command(flatten)]
         launch: LaunchOptions,
@@ -336,7 +338,7 @@ fn run_instance(
     cmd: String,
     args: &LaunchOptions,
     instance: PathBuf,
-    layers: Vec<PathBuf>,
+    _layers: Vec<PathBuf>,
     shared_fd: RawFd,
     mmap_addr: usize,
 ) -> anyhow::Result<Option<u8>> {
