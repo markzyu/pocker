@@ -18,13 +18,17 @@ Containers expect their layers to be readonly.
 
 As of this early version, pocker writes directly to the layer. So it would write changes to that layer, even if it's supposed to be readonly.
 
-And, it only works if there is just one layer in the current container. 
-
 This caveat will be resolved later, by adding support for fs overlays.
 
 Due to this caveat, the `pocker run` command is currently "hidden", but you can still invoke it if you'd like to.
 
-## Caveat 2: You need to manually unset `LD_PRELOAD`
+## Caveat 2: Most images fail to fetch
+
+Right now pocker only supports `application/vnd.oci.image.layer.v1.tar+gzip` layer format. If your image fails to download, that's probably why.
+
+And, `pocker run` requires there to be just one layer in the current container. 
+
+## Caveat 3: You need to manually unset `LD_PRELOAD`
 
 Termux has a dynamic loader in `LD_PRELOAD`, which exists outside our pocker container. And the loader seems to inject  `LD_PRELOAD` back for a child process, if a parent (1) tried to unset it, and (2) if the parent was not launched with `LD_PRELOAD=""` in its explicit command line.
 
