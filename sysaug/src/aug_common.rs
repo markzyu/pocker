@@ -194,7 +194,9 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             // Check whether this is a hardlink or a symlink to a hardlink
             let cloned_path = path.to_owned();
             let resolve_one_link = self._read_symlink(&cloned_path)?;
-            if resolve_one_link.as_ref() == Some(&canonical_path) {
+            let is_simple_hardlink = resolve_one_link.as_ref() == Some(&canonical_path)
+                || &cloned_path == &canonical_path;
+            if is_simple_hardlink {
                 let Some(basename) = canonical_path.file_name() else {
                     return Ok(None);
                 };
@@ -202,6 +204,13 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 let mut basename = basename.to_os_string();
                 basename.push(".json");
                 return Ok(Some(canonical_path.with_file_name(&basename)));
+            } else {
+                event!(
+                    Level::DEBUG,
+                    "Hardlink corner case, file {:?}, backing {:?}",
+                    path,
+                    &canonical_path
+                );
             }
         }
 

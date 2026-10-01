@@ -370,11 +370,14 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         val.sets_file_perms = Some(PermType::ChmodOnCreation);
         val.file_perms_position = Some(3);
         val.flags = Some(2);
+        val.flag_dont_follow_symlink = Some(libc::AT_SYMLINK_NOFOLLOW as usize);
+        val.should_follow_hardlink = true;
     }
 
     define_dirfd_syscall!(libc::SYS_readlinkat, 2, 0, iter, next);
     if let Some(val) = iter[next].as_mut() {
         val.dont_follow_symlink = true;
+        val.should_follow_hardlink = true;
     }
 
     define_dirfd2_syscall!(libc::SYS_renameat, 10, iter, next);
@@ -404,11 +407,13 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
     define_paths_syscall!(libc::SYS_lgetxattr, 1, iter, next);
     if let Some(val) = iter[next].as_mut() {
         val.dont_follow_symlink = true;
+        val.should_follow_hardlink = true;
     }
 
     define_paths_syscall!(libc::SYS_llistxattr, 1, iter, next);
     if let Some(val) = iter[next].as_mut() {
         val.dont_follow_symlink = true;
+        val.should_follow_hardlink = true;
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -425,6 +430,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
     if let Some(val) = iter[next].as_mut() {
         val.flags = Some(2);
         val.flag_dont_follow_symlink = Some(libc::AT_SYMLINK_NOFOLLOW as usize);
+        val.should_follow_hardlink = true;
         val.statx_buf_position = Some(4);
     }
 
@@ -438,6 +444,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
     if let Some(val) = iter[next].as_mut() {
         val.flags = Some(3);
         val.flag_dont_follow_symlink = Some(libc::AT_SYMLINK_NOFOLLOW as usize);
+        val.should_follow_hardlink = true;
     }
 
     define_getdents_syscall!(libc::SYS_getdents64, 64, iter, next);
@@ -469,6 +476,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         if let Some(val) = iter[next].as_mut() {
             val.flags = Some(3);
             val.flag_dont_follow_symlink = Some(libc::AT_SYMLINK_NOFOLLOW as usize);
+            val.should_follow_hardlink = true;
             val.stat64_buf_position = Some(2);
         }
 
@@ -483,6 +491,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         define_paths_syscall!(libc::SYS_lstat64, 1, iter, next);
         if let Some(val) = iter[next].as_mut() {
             val.dont_follow_symlink = true;
+            val.should_follow_hardlink = true;
             val.stat64_buf_position = Some(1);
         }
     }
@@ -504,6 +513,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         define_dirfd_fileperms_syscall!(libc__SYS_fchmodat2, 2, 0, PermType::Chmod, 2, iter, next);
         if let Some(val) = iter[next].as_mut() {
             val.flags = Some(3);
+            val.flag_dont_follow_symlink = Some(libc::AT_SYMLINK_NOFOLLOW as usize);
         }
     }
 
@@ -519,6 +529,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         if let Some(val) = iter[next].as_mut() {
             val.flags = Some(3);
             val.flag_dont_follow_symlink = Some(libc::AT_SYMLINK_NOFOLLOW as usize);
+            val.should_follow_hardlink = true;
             val.stat_buf_position = Some(2);
         }
     }
@@ -543,11 +554,14 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
             val.sets_file_perms = Some(PermType::ChmodOnCreation);
             val.file_perms_position = Some(2);
             val.flags = Some(1);
+            val.flag_dont_follow_symlink = Some(libc::AT_SYMLINK_NOFOLLOW as usize);
+            val.should_follow_hardlink = true;
         }
 
         define_paths_syscall!(libc::SYS_readlink, 1, iter, next);
         if let Some(val) = iter[next].as_mut() {
             val.dont_follow_symlink = true;
+            val.should_follow_hardlink = true;
         }
 
         define_paths_fileperms_syscall!(libc::SYS_lchown, 1, PermType::Chown, 1, iter, next);
@@ -558,12 +572,14 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         define_paths_syscall!(libc::SYS_stat, 1, iter, next);
         if let Some(val) = iter[next].as_mut() {
             val.dont_follow_symlink = true;
+            val.should_follow_hardlink = true;
             val.stat_legacy_buf_position = Some(1);
         }
 
         define_paths_syscall!(libc::SYS_lstat, 1, iter, next);
         if let Some(val) = iter[next].as_mut() {
             val.dont_follow_symlink = true;
+            val.should_follow_hardlink = true;
             val.stat_legacy_buf_position = Some(1);
         }
 

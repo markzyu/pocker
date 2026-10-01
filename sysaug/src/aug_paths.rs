@@ -135,24 +135,26 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             }
         }
 
-        // Handle stat syscalls for hardlinks
-        let is_stat = syscall.stat_buf_position.is_some()
-            || syscall.stat_legacy_buf_position.is_some()
-            || syscall.stat64_buf_position.is_some()
-            || syscall.statx_buf_position.is_some();
-        if is_stat {
-            let stat_path = save_paths.iter_mut().find_map(|x| x.as_mut()).ok_or(
-                SysAugError::SyscallMissingField(
-                    "stat syscalls don't have a corresponding path/fd to read from",
-                ),
-            )?;
-            if let Some(meta) = self.read_metadata_for_file(stat_path)? {
+        // Handle reads of hardlinks
+        let maybe_path = save_paths.iter_mut().find_map(|x| x.as_mut());
+        if syscall.should_follow_hardlink
+            && let Some(path) = maybe_path
+        {
+            if let Some(meta) = self.read_metadata_for_file(path)? {
                 if meta.hardlink_counter.is_some() {
                     // Resolve the actual path of the hardlink
-                    *stat_path = stat_path
-                        .canonicalize()
-                        .map_err(SysAugError::StatHardlinkIO)?;
+                    *path = path.canonicalize().map_err(SysAugError::StatHardlinkIO)?;
                     need_write_regs = true;
+
+                    // Set dirfd to AT_FDCWD to avoid ELOOP on some Linux
+                    let i = save_paths.iter().position(|x| x.is_some()).unwrap();
+                    if syscall.dirfd_precedes_path {
+                        *write_args[i - 1] = libc::AT_FDCWD as usize;
+                    }
+
+                    if let Some(j) = syscall.dirfd_position {
+                        *write_args[j as usize] = libc::AT_FDCWD as usize;
+                    }
                 }
             }
         }
@@ -540,6 +542,9 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         );
 
         stats.iter_mut().for_each(move |x| {
+            if let Some(count) = &meta.hardlink_counter {
+                x.set_hardlink_counter(*count);
+            }
             if let Some(chmod) = &meta.chmod {
                 let old_mode = x.get_mode();
                 let new_mode = (old_mode & !FILE_PERMS_MASK) | (*chmod & FILE_PERMS_MASK);
@@ -639,8 +644,7 @@ impl IDirent for Dirent {
         &mut self.name
     }
 
-    fn normalize_type(&mut self) {
-    }
+    fn normalize_type(&mut self) {}
 }
 impl pocker_ptrace::CStruct for Dirent {
     type H = DirentHeader;
@@ -660,6 +664,7 @@ trait IStat: Sized + std::fmt::Debug {
     fn set_mode(&mut self, val: usize);
     fn set_uid(&mut self, val: usize);
     fn set_gid(&mut self, val: usize);
+    fn set_hardlink_counter(&mut self, val: usize);
 }
 
 #[allow(dead_code)]
@@ -694,6 +699,10 @@ impl IStat for libc::stat {
     fn set_uid(&mut self, val: usize) {
         self.st_uid = val as u32;
     }
+
+    fn set_hardlink_counter(&mut self, val: usize) {
+        self.st_nlink = val as u64;
+    }
 }
 
 impl IStat for libc::stat64 {
@@ -711,6 +720,10 @@ impl IStat for libc::stat64 {
 
     fn set_uid(&mut self, val: usize) {
         self.st_uid = val as u32;
+    }
+
+    fn set_hardlink_counter(&mut self, val: usize) {
+        self.st_nlink = val as u64;
     }
 }
 
@@ -730,6 +743,10 @@ impl IStat for libc::statx {
     fn set_uid(&mut self, val: usize) {
         self.stx_uid = val as u32;
     }
+
+    fn set_hardlink_counter(&mut self, val: usize) {
+        self.stx_nlink = val as u32;
+    }
 }
 
 impl IStat for StatLegacy {
@@ -747,5 +764,9 @@ impl IStat for StatLegacy {
 
     fn set_uid(&mut self, val: usize) {
         self.st_uid = val as u16;
+    }
+
+    fn set_hardlink_counter(&mut self, val: usize) {
+        self.st_nlink = val as u16;
     }
 }

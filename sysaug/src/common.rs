@@ -296,12 +296,15 @@ pub struct SyscallInfo {
     /// > It shouldn't send a system call to rename the `.metadata/links/id` to `b`.
     /// > But it should rename the `link_a` (symlink).
     ///
-    /// One exception is `stat`. We should be showing the stat of the content file
+    /// One exception is basic readonly calls like `stat`, `access`, `open`...
+    /// For these calls, we should be showing the status of the content file. And
+    /// we identify these calls with `should_follow_hardlink`
     ///
     /// Another is metadata. All links share permission. So they share metadata at
     /// `.metadata/links/id.json`. However, we need to handle `unlink()` differently,
     /// which must check `RootfsMetadata::hardlink_counter` before removing metadata.
     pub creates_hardlink: Option<(u8, u8)>,
+    pub should_follow_hardlink: bool,
 
     /// This indicates a aug_paths syscall. register ids are stored as (from, to)
     pub renames_metadata: Option<(u8, u8)>,
@@ -340,6 +343,7 @@ pub const fn default_syscall_info() -> SyscallInfo {
         flag_dont_follow_symlink: None,
         creates_symlink: None,
         creates_hardlink: None,
+        should_follow_hardlink: false,
         renames_metadata: None,
         is_setter: false,
         res_bits: 0,
