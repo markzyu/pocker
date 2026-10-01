@@ -152,6 +152,12 @@ pub fn canonicalize_clone(maybe_path: &Option<PathBuf>) -> Result<Option<PathBuf
 pub fn init_logging() -> Option<WorkerGuard> {
     let no_color = std::env::var("RUST_LOG_NO_COLOR").is_ok();
     let is_blocking = std::env::var("RUST_LOG_BLOCKING").is_ok();
+    if std::env::var("RUST_LOG").is_err() {
+        unsafe {
+            std::env::set_var("RUST_LOG", "WARN");
+        }
+    }
+
     let mut guard: Option<WorkerGuard> = None;
     if let Ok(filename) = std::env::var("RUST_LOG_DIR") {
         let appender = tracing_appender::rolling::minutely(filename, "main.log");
