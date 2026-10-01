@@ -325,7 +325,6 @@ fn download_image(
         new_args.push(digest.into());
         args.push_os_strings(&mut new_args);
         cmd.args(new_args);
-        cmd.env("LD_PRELOAD", "");
 
         if let Err(e) = launch_ptrace(args2, cmd, fix_attach, shared_fd, mmap_addr) {
             bail!("Error: {:?}", e);
@@ -373,7 +372,8 @@ fn run_instance(
         std::env::set_var("PATH", "/bin:/sbin:/usr/bin:/usr/sbin");
     }
 
-    let cmd = std::process::Command::new(&cmd);
+    let mut cmd = std::process::Command::new(&cmd);
+    cmd.env("LD_PRELOAD", "");
     match launch_ptrace(args2, cmd, args.fix_attach, shared_fd, mmap_addr) {
         Err(e) => bail!("Error: {:?}", e),
         Ok(ans) => Ok(ans),
