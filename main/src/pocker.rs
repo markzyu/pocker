@@ -40,7 +40,7 @@ struct CLIArgs {
 #[derive(Clone, Debug, Subcommand)]
 enum Commands {
     /// Download a container from image name, and unarchive with fake permissions in mind
-    Download {
+    Pull {
         /// The name of the container image
         image: String,
 
@@ -181,7 +181,7 @@ fn main() -> anyhow::Result<()> {
             event!(Level::INFO, "Done.");
             std::process::exit(retcode.unwrap() as i32);
         }
-        Commands::Download {
+        Commands::Pull {
             image,
             internal_layer,
             launch,
@@ -319,7 +319,7 @@ fn download_image(
         let fix_attach = launch.fix_attach;
         let mut cmd = std::process::Command::new(&self_path);
         let mut new_args: Vec<OsString> = Vec::new();
-        new_args.push("download".into());
+        new_args.push("pull".into());
         new_args.push(image_name.clone().into());
         new_args.push("--internal-layer".into());
         new_args.push(digest.into());
@@ -337,15 +337,16 @@ fn download_image(
 fn run_instance(
     cmd: String,
     args: &LaunchOptions,
-    instance: PathBuf,
-    _layers: Vec<PathBuf>,
+    _instance: PathBuf,
+    layers: Vec<PathBuf>,
     shared_fd: RawFd,
     mmap_addr: usize,
 ) -> anyhow::Result<Option<u8>> {
-    let instance = instance.canonicalize()?;
+    let last_layer = &layers[layers.len() - 1];
+    let rootfs = last_layer.canonicalize()?;
     let args2 = SysAugArgs {
-        chroot: Some(instance.clone()),
-        rootfs: Some(instance),
+        chroot: Some(rootfs.clone()),
+        rootfs: Some(rootfs),
         perms_mode: PermsMode::RootOnly,
         fail_fast: args.fail_fast,
         fix_sigsys: args.fix_sigsys,
@@ -353,8 +354,23 @@ fn run_instance(
         no_seccomp: args.no_seccomp,
         gdb: args.gdb,
         gdb_at: args.gdb_at,
-        use_native_loader: args.use_native_loader,
+        use_native_loader: false,
     };
+
+    event!(
+        Level::WARN,
+        "Beware! This command is still in early development!"
+    );
+    event!(
+        Level::WARN,
+        "Pocker will overwrite a layer to start the container!"
+    );
+
+    // TODO: move these into a config or command line argument
+    unsafe {
+        std::env::remove_var("LD_PRELOAD");
+        std::env::set_var("PATH", "/bin:/sbin:/usr/bin:/usr/sbin");
+    }
 
     let cmd = std::process::Command::new(&cmd);
     match launch_ptrace(args2, cmd, args.fix_attach, shared_fd, mmap_addr) {
