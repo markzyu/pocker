@@ -165,9 +165,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 && path.exists()
             {
                 let target_path = if path.starts_with(&metadir) {
-                    self.save_metadata_for_file(path, |x| {
-                        x.hardlink_counter = x.hardlink_counter.map(|x| x + 1)
-                    })?;
                     path.clone()
                 } else {
                     let links_dir = metadir.join("links");
@@ -212,6 +209,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         self.on_stat_syscall_exit(syscall, &read_args, &save_paths)
             .await?;
         self.on_link_syscall_exit(syscall, &read_args, &save_paths)?;
+        self.on_rename_syscall_exit(syscall, &read_args, &save_paths)?;
 
         if retval == 0 {
             return Ok(());
@@ -229,6 +227,27 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 }
                 _ => (),
             };
+        }
+        Ok(())
+    }
+
+    /// Rename metadata as well.
+    fn on_rename_syscall_exit(
+        &self,
+        syscall: &SyscallInfo,
+        _args: &[usize],
+        save_paths: &[Option<PathBuf>],
+    ) -> Result<(), SysAugError> {
+        if let Some((i, j)) = syscall.renames_metadata {
+            let i = i as usize;
+            let j = j as usize;
+            let path1 = save_paths[i].as_ref().unwrap().as_path();
+            let path2 = save_paths[j].as_ref().unwrap().as_path();
+            let path1 = self.get_metadata_path(path1)?;
+            let path2 = self.get_metadata_path(path2)?;
+            if let (Some(path1), Some(path2)) = (path1, path2) {
+                std::fs::rename(path1, path2).map_err(SysAugError::RenameMetadata)?;
+            }
         }
         Ok(())
     }

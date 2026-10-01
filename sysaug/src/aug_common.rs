@@ -26,7 +26,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     // ------------------------ RootFS Metadata (Perms, etc) -----------------------
     // -----------------------------------------------------------------------------
 
-    fn _get_metadata_path(&self, path: &Path) -> Result<Option<PathBuf>, SysAugError> {
+    pub fn get_metadata_path(&self, path: &Path) -> Result<Option<PathBuf>, SysAugError> {
         if self.consts.args.rootfs.is_none() {
             return Ok(None);
         }
@@ -40,15 +40,16 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(maybe_meta_path)
     }
 
-    pub fn save_metadata_for_file(
+    pub fn save_metadata_for_file<T>(
         &self,
         path: &Path,
-        update_fn: impl FnOnce(&mut RootFsMetadata) -> (),
-    ) -> Result<(), SysAugError> {
+        update_fn: impl FnOnce(&mut RootFsMetadata) -> T,
+    ) -> Result<Option<T>, SysAugError> {
         if self.consts.args.rootfs.is_none() {
-            return Ok(());
+            return Ok(None);
         }
-        if let Some(meta_path) = self._get_metadata_path(path)? {
+        let mut result: Option<T> = None;
+        if let Some(meta_path) = self.get_metadata_path(path)? {
             event!(
                 Level::DEBUG,
                 "Writing metadata file: {:?}",
@@ -74,7 +75,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 serde_json::from_reader(&*file).map_err(SysAugError::ParseRootFsMetadata)?
             };
 
-            update_fn(&mut curr_data);
+            result.replace(update_fn(&mut curr_data));
 
             if exists {
                 file.seek(std::io::SeekFrom::Start(0))
@@ -83,7 +84,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             }
             serde_json::to_writer(&*file, &curr_data).map_err(SysAugError::WriteRootFsMetadata2)?;
         }
-        Ok(())
+        Ok(result)
     }
 
     pub fn read_metadata_for_file(
@@ -93,7 +94,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         if self.consts.args.rootfs.is_none() {
             return Ok(None);
         }
-        if let Some(meta_path) = self._get_metadata_path(path)? {
+        if let Some(meta_path) = self.get_metadata_path(path)? {
             event!(
                 Level::DEBUG,
                 "Reading metadata file: {:?}",
@@ -115,7 +116,19 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         if self.consts.args.rootfs.is_none() {
             return Ok(());
         }
-        if let Some(meta_path) = self._get_metadata_path(path)? {
+        if let Some(meta_path) = self.get_metadata_path(path)? {
+            // First, consider hardlink counter
+            let should_keep = self.save_metadata_for_file(path, |x| {
+                if let Some(val) = x.hardlink_counter {
+                    x.hardlink_counter = Some(val - 1);
+                    return true;
+                }
+                false
+            })?;
+            if should_keep == Some(true) {
+                return Ok(());
+            }
+
             event!(
                 Level::TRACE,
                 "Deleting metadata file: {:?}",
@@ -130,7 +143,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         }
 
         if path.is_dir() {
-            if let Some(mut meta_path) = self._get_metadata_path(path)? {
+            if let Some(mut meta_path) = self.get_metadata_path(path)? {
                 meta_path.pop();
                 let _ = std::fs::remove_dir_all(meta_path);
             }

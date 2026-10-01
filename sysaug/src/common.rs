@@ -160,6 +160,9 @@ pub enum SysAugError {
 
     #[error("Failed to create hardlink: {0}")]
     CreateHardlinkIO(std::io::Error),
+
+    #[error("Failed to move metadata: {0}")]
+    RenameMetadata(std::io::Error),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -292,6 +295,9 @@ pub struct SyscallInfo {
     /// which must check `RootfsMetadata::hardlink_counter` before removing metadata.
     pub creates_hardlink: Option<(u8, u8)>,
 
+    /// This indicates a aug_paths syscall. register ids are stored as (from, to)
+    pub renames_metadata: Option<(u8, u8)>,
+
     /// true -> setuid/setgid, false -> getuid/getgid
     pub is_setter: bool,
     /// a bitmask of Real/Effective/SavedSet/FileSystem/IsUid flags (from 0 to 31). One call can set multiple flags at once.
@@ -326,6 +332,7 @@ pub const fn default_syscall_info() -> SyscallInfo {
         flag_dont_follow_symlink: None,
         creates_symlink: None,
         creates_hardlink: None,
+        renames_metadata: None,
         is_setter: false,
         res_bits: 0,
         resf_bit: None,
