@@ -60,7 +60,7 @@ jobs:
         run: RUST_LOG=INFO bash tests.sh
 
       - name: Run alpine container
-        run: LD_PRELOAD="" cargo run --bin pocker -- run alpine
+        run: echo "busybox" | LD_PRELOAD="" cargo run --bin pocker -- run alpine
 
   lints:
     name: Lints and Unit Tests
