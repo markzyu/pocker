@@ -172,6 +172,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     std::fs::create_dir_all(&links_dir).map_err(SysAugError::CreateHardlinkIO)?;
                     std::fs::rename(path, &target_path).map_err(SysAugError::CreateHardlinkIO)?;
                     symlink(&target_path, path).map_err(SysAugError::CreateHardlinkIO)?;
+                    self.increment_hardlink_counter(path)?;
                     target_path
                 };
 
@@ -271,15 +272,20 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         if let Some((_, i)) = syscall.creates_hardlink {
             let i = i as usize;
             if let Some(path) = save_paths[i].as_ref() {
-                self.save_metadata_for_file(path, |x| {
-                    if let Some(count) = x.hardlink_counter {
-                        x.hardlink_counter = Some(count + 1);
-                    } else {
-                        x.hardlink_counter = Some(1);
-                    }
-                })?;
+                self.increment_hardlink_counter(path);
             }
         }
+        Ok(())
+    }
+
+    fn increment_hardlink_counter(&self, path: &PathBuf) -> Result<(), SysAugError> {
+        self.save_metadata_for_file(path, |x| {
+            if let Some(count) = x.hardlink_counter {
+                x.hardlink_counter = Some(count + 1);
+            } else {
+                x.hardlink_counter = Some(1);
+            }
+        })?;
         Ok(())
     }
 
