@@ -1416,7 +1416,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pocker"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1440,7 +1440,7 @@ dependencies = [
 
 [[package]]
 name = "pocker-executor"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-lite",
  "krsm",
@@ -1454,7 +1454,7 @@ dependencies = [
 
 [[package]]
 name = "pocker-procfs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "nix",
@@ -1464,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "pocker-ptrace"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "backtrace",
  "lazy_static",
@@ -1478,7 +1478,7 @@ dependencies = [
 
 [[package]]
 name = "pocker-sysaug"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "elf",
  "futures-lite",
