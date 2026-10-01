@@ -129,6 +129,11 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             })?;
             if should_keep == Some(true) {
                 return Ok(());
+            } else if let Ok(path) = path.canonicalize() {
+                // First, delete the file backing the hardlink
+                let _ = std::fs::remove_file(path)
+                    .map_err(SysAugError::DeleteMetadata)
+                    .map_err(display_err);
             }
 
             event!(

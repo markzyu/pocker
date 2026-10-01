@@ -272,7 +272,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         if let Some((_, i)) = syscall.creates_hardlink {
             let i = i as usize;
             if let Some(path) = save_paths[i].as_ref() {
-                self.increment_hardlink_counter(path);
+                self.increment_hardlink_counter(path)?;
             }
         }
         Ok(())
