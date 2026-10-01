@@ -119,7 +119,9 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         if let Some(meta_path) = self.get_metadata_path(path)? {
             // First, consider hardlink counter
             let should_keep = self.save_metadata_for_file(path, |x| {
-                if let Some(val) = x.hardlink_counter {
+                if let Some(val) = x.hardlink_counter
+                    && val > 1
+                {
                     x.hardlink_counter = Some(val - 1);
                     return true;
                 }
