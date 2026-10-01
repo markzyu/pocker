@@ -16,7 +16,7 @@ LD_PRELOAD="" cargo run --bin pocker -- run alpine
 
 Containers expect their layers to be readonly.
 
-As of this early version, Pocker writes directly to the layer. So it would write changes to that layer, even if it's supposed to be readonly.
+As of this early version, pocker writes directly to the layer. So it would write changes to that layer, even if it's supposed to be readonly.
 
 And, it only works if there is just one layer in the current container. 
 
