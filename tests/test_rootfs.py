@@ -221,6 +221,13 @@ class TestRootFs(t.TestCase):
         self.assertEqual(self._read_hardlink_counter(), 2)
         self.compare_tar_with_dir(STAGING, "1c-rootfs-hardlinks-rename.tar")
 
+    def test_chroot_hardlink_rename_overlap(self):
+        ans = c.run_elf_chroot("tests/fixtures/1d-hardlink-rename-overlap.out", env=DEBUGENV)
+        self.assertEqual(ans.returncode, 0)
+        self.assertEqual(self._read_hardlink_counter(), 2)
+        self.assertTrue(os.path.exists(f"{STAGING}/x"))
+        self.assertTrue(os.path.exists(f"{STAGING}/y"))
+
     def test_rootfs_hardlink_copy(self):
         cmd = f"""
         set -x;
