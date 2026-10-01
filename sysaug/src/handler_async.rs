@@ -571,7 +571,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         //    2. Tracer loop_handle_tracee_syscalls() will not see any syscall until _insert_syscall_during_init() yields.
         //    3. The syscall we get from wait_for_syscall() will not complete until _insert_syscall_during_init() yields.
         //    4. When _insert_syscall_during_init() yields, both tracer and tracee will see the same syscall instead of the inserted one.
-        event!(Level::INFO, "TESTT1");
         self.yielder_syscall.unblock();
         self.wait_for_syscall().await?;
 

@@ -51,7 +51,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let mut result: Option<T> = None;
         if let Some(meta_path) = self.get_metadata_path(path)? {
             event!(
-                Level::DEBUG,
+                Level::INFO,
                 "Writing metadata file: {:?}",
                 meta_path.to_string_lossy()
             );
@@ -182,14 +182,14 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
         // Case 1: The file is a hardlink, whose target is stored within the metadata dir
         if let Ok(Some(link_target_path)) = self._read_symlink(&canonical_path) {
-            if let Ok(relative_path) = link_target_path.strip_prefix(&metadir) {
-                let Some(basename) = relative_path.file_name() else {
+            if link_target_path.strip_prefix(&metadir).is_ok() {
+                let Some(basename) = link_target_path.file_name() else {
                     return Ok(None);
                 };
 
                 let mut basename = basename.to_os_string();
                 basename.push(".json");
-                return Ok(Some(relative_path.with_file_name(&basename)));
+                return Ok(Some(link_target_path.with_file_name(&basename)));
             }
         }
 
@@ -338,6 +338,12 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         }
 
         if let Some(link) = self._read_symlink(real_path)? {
+            if let Some(metadir) = self.get_metadata_dir()
+                && let Ok(link) = link.canonicalize()
+                && link.starts_with(&metadir)
+            {
+                return Ok(Err(false));
+            }
             if visited.contains(&link) {
                 return Ok(Err(true));
             }
