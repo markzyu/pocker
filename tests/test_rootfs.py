@@ -60,10 +60,13 @@ class TestRootFs(t.TestCase):
         self.assertEqual(ans.returncode, 0)
 
     def _create_tar_from_container(self, dir, tar_name, **kwargs):
+        # In addition to using pocker-runtime, we must create the tar in deterministic order
         ans = c.run_script(
             f"""
             echo "[POCKER] [CREATING TAR]" >&2
-            umask 0077 && cd {dir} && rm -f ../{tar_name} && tar cf ../{tar_name} .
+            umask 0077 && cd {dir} && rm -f ../{tar_name} && (
+                find . | sort | tar cf ../{tar_name} --no-recursion -T -
+            )
             if [ $? -ne 0 ]; then
                 echo "[POCKER] [ERROR CREATING STAGING FROM TAR]" >&2
                 exit $?
