@@ -174,12 +174,14 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     symlink(&target_path, path).map_err(SysAugError::CreateHardlinkIO)?;
                     target_path
                 };
-                if !path.starts_with(self.consts.args.rootfs.as_ref().unwrap()) {
+
+                let result_path = save_paths[j].as_ref().unwrap();
+                let rootfs_path = self.consts.args.rootfs.as_ref().unwrap();
+                if !result_path.starts_with(rootfs_path) {
                     need_skip_syscall.replace(EACCES);
-                } else if path.exists() {
+                } else if result_path.exists() {
                     need_skip_syscall.replace(EEXIST);
                 } else {
-                    let result_path = save_paths[j].as_ref().unwrap();
                     symlink(&target_path, result_path).map_err(SysAugError::CreateHardlinkIO)?;
                     need_skip_syscall.replace(0);
                 }
