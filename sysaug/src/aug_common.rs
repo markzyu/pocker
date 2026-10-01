@@ -342,7 +342,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         } else if let (Some(flag), Some(flag_reg)) =
             (syscall.flag_dont_follow_symlink, syscall.flags)
         {
-            if args[flag_reg] | flag != 0 {
+            if (args[flag_reg] & flag) != 0 {
                 return Ok(Err(false));
             }
         }
