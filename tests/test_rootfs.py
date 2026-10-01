@@ -225,7 +225,7 @@ class TestRootFs(t.TestCase):
         set -x;
         touch {STAGING}/a;
         ln {STAGING}/a {STAGING}/b;
-        cp {STAGING}/a {STAGING}/c;
+        cp -al {STAGING}/a {STAGING}/c;
         """
         ans = c.run_script(cmd.encode(), rootfs=True)
         self.assertEqual(ans.returncode, 0)
