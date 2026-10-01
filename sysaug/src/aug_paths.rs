@@ -10,9 +10,9 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
-use crate::PermType;
 use crate::common::{PathAction, SysAugError, SyscallInfo};
 use crate::handler_async::{AsyncTraceeHandler, get_mem_helper};
+use crate::{PermType, display_err};
 use pocker_ptrace::{
     GenericPurposeRegs, MemHelpers, read_bytes_to_fixed_sized_objs, read_bytes_to_structs, setregs,
     write_fixed_sized_objs_to_tracee, write_structs_to_tracee,
@@ -193,9 +193,22 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     path.clone()
                 } else {
                     let links_dir = metadir.join("links");
-                    let target_path = links_dir.join(uuid::Uuid::new_v4().to_string());
+                    let uuid = uuid::Uuid::new_v4().to_string();
+                    let new_meta = links_dir.join(format!("{}.json", &uuid));
+                    let target_path = links_dir.join(uuid);
+
+                    // First, move the metadata
                     std::fs::create_dir_all(&links_dir).map_err(SysAugError::CreateHardlinkIO)?;
+                    if let Some(old_meta) = self.get_metadata_path(path)? {
+                        let _ = std::fs::rename(&old_meta, &new_meta)
+                            .map_err(SysAugError::CreateHardlinkIO)
+                            .map_err(display_err);
+                    };
+
+                    // Then, move the link content
                     std::fs::rename(path, &target_path).map_err(SysAugError::CreateHardlinkIO)?;
+
+                    // Then, setup symlinks
                     symlink(&target_path, path).map_err(SysAugError::CreateHardlinkIO)?;
                     self.increment_hardlink_counter(path)?;
                     target_path
