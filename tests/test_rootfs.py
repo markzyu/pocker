@@ -1,6 +1,7 @@
 from common import METADATA, STAGING
 import common as c
 import errno
+import json
 import os
 import subprocess
 import tarfile
@@ -70,6 +71,7 @@ class TestRootFs(t.TestCase):
             echo "[POCKER] [CREATED TAR]" >&2
             """.encode(),
             rootfs=True,
+            env={"RUST_LOG": "TRACE", "RUST_LOG_BLOCKING": "1"},
             **kwargs,
         )
         self.assertEqual(ans.returncode, 0)
@@ -89,17 +91,34 @@ class TestRootFs(t.TestCase):
         ok = os.system(cmd)
         self.assertEqual(ok, 0)
 
-    def compare_tar_with_dir(self, dir, tar, ignore_perms=False):
+    """ This assumes that there is only one hardlink in the rootfs """
+    def _read_hardlink_counter(self):
+        links_dir = os.path.join(METADATA, "links")
+        link_metadata_files = [
+            path for path in os.listdir(links_dir)
+            if path.endswith(".json")
+        ]
+        self.assertEqual(len(link_metadata_files), 1)
+        with open(os.path.join(links_dir, link_metadata_files[0])) as f:
+            link_metadata = json.load(f)
+        return link_metadata["hardlinkCounter"]
+
+    def compare_tar_with_dir(self, dir, expected_name, ignore_perms=False):
+        actual_name = "result.tar"
         if ignore_perms:
-            self._create_tar_from_host_os(dir, "result.tar")
+            self._create_tar_from_host_os(dir, actual_name)
         else:
-            self._create_tar_from_container(dir, "result.tar")
+            self._create_tar_from_container(dir, actual_name)
+
+        if os.environ.get("UPDATE_TARS") == "1":
+            os.rename(f"tests/fixtures/{actual_name}", f"tests/fixtures/{expected_name}")
+            return
 
         tar_info_fn = _tar_info_minimal_no_perms if ignore_perms else _tar_info_minimal
 
-        with tarfile.open(f"tests/fixtures/{tar}") as expect_tar:
+        with tarfile.open(f"tests/fixtures/{expected_name}") as expect_tar:
             expect_val = _sort_tar_info(map(tar_info_fn, expect_tar.getmembers()))
-        with tarfile.open("tests/fixtures/result.tar") as actual_tar:
+        with tarfile.open(f"tests/fixtures/{actual_name}") as actual_tar:
             actual_val = _sort_tar_info(map(tar_info_fn, actual_tar.getmembers()))
         self.assertEqual(expect_val, actual_val)
 
@@ -110,7 +129,7 @@ class TestRootFs(t.TestCase):
 
     def test_rm_rf_after_rootfs_creates_metadata(self):
         """
-        See #20 for details on why this is necessary
+        Removing an entire rootfs should also remove the metadata
         """
         self.test_rootfs_creates_metadata()
 
@@ -143,7 +162,73 @@ class TestRootFs(t.TestCase):
         self.assertEqual(ans.returncode, 0)
         self.assertFalse(os.path.exists(STAGING))
         self.assertFalse(os.path.exists(METADATA + "/rootfs"))
-    
+
+    def test_rootfs_basic_hardlinks(self):
+        cmd = f"""
+        set -x;
+        touch {STAGING}/a;
+        ln {STAGING}/a {STAGING}/b;
+        stat {STAGING}/a | head -n 2
+        cat {STAGING}/a
+        """
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+        self.assertIn(b"regular empty file", ans.stdout)
+        self.assertEqual(self._read_hardlink_counter(), 2)
+        self.compare_tar_with_dir(STAGING, "1c-rootfs-hardlinks-basic.tar")
+
+    def test_rootfs_singular_hardlink(self):
+        cmd = f"""
+        set -x;
+        touch {STAGING}/a;
+        ln {STAGING}/a {STAGING}/b;
+        rm {STAGING}/a;
+        stat {STAGING}/b | head -n 2
+        """
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+        self.assertIn(b"regular empty file", ans.stdout)
+        self.assertEqual(self._read_hardlink_counter(), 1)
+        self.compare_tar_with_dir(STAGING, "1c-rootfs-hardlinks-singular.tar")
+
+    def test_rootfs_hardlink_removal(self):
+        cmd = f"""
+        set -x;
+        touch {STAGING}/a;
+        ln {STAGING}/a {STAGING}/b;
+        rm {STAGING}/a {STAGING}/b;
+        ls -l {STAGING}
+        """
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+        self.assertIn(b"total 0", ans.stdout)
+        self.compare_tar_with_dir(METADATA, "1c-rootfs-hardlinks-empty-metadata.tar", ignore_perms=True)
+        self.compare_tar_with_dir(STAGING, "1c-rootfs-hardlinks-empty-staging.tar")
+
+    def test_rootfs_hardlink_rename(self):
+        cmd = f"""
+        set -x;
+        touch {STAGING}/a;
+        ln {STAGING}/a {STAGING}/b;
+        mv {STAGING}/a {STAGING}/c;
+        """
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+        self.assertEqual(self._read_hardlink_counter(), 2)
+        self.compare_tar_with_dir(STAGING, "1c-rootfs-hardlinks-rename.tar")
+
+    def test_rootfs_hardlink_copy(self):
+        cmd = f"""
+        set -x;
+        touch {STAGING}/a;
+        ln {STAGING}/a {STAGING}/b;
+        cp {STAGING}/a {STAGING}/c;
+        """
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+        self.assertEqual(self._read_hardlink_counter(), 3)
+        self.compare_tar_with_dir(STAGING, "1c-rootfs-hardlinks-copy.tar")
+
     def test_chroot_symlinks(self):
         os.system(f"ls -l {STAGING}")
         ans = c.run_elf_chroot("tests/fixtures/05-symlinks.out")
