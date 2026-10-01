@@ -1,12 +1,12 @@
 ## So this is just PRoot?
 
-The fundamental idea is not that different from proot. In fact, it's inspiried by proot -- both make use of SECCOMP to improve performance. Both can intercept system calls through ptrace() and simulate the chroot() system call so that we can chroot into a different Linux Distro on a non-rooted phone. The main difference is this: This solution is multithreaded, while proot itself is single threaded.
+This is inspiried by PRoot -- both make use of SECCOMP to improve performance. Both can intercept system calls through ptrace() and simulate the chroot() system call so that we can chroot into a different Linux Distro on a non-rooted phone. The main difference is this: This solution is multithreaded, while proot itself is single threaded.
 
 You should just use PRoot instead. It has a history of proven stability and success.
 
-My project is still in its early stage. And it barely works right now. Basic shell commands work but `apt-get` is broken.
+My project is still in its early stage. It barely works right now. Basic shell commands work but `apt-get` is broken.
 
-Eventually, my goal is to be able to run selected OCI container on any mobile device, without needing root, by creating an accompanying configuration file that tells the ptrace how to glue the file system back together. But there is a long way to go.
+My goal is to run OCI containers on modern Android devices, without rooting the phone, without a full Linux VM, by creating an accompanying configuration file that tells the ptrace how to glue the file system back together.
 
 ## Multi-threading mode 
 
@@ -16,7 +16,7 @@ By default, pocker will try to run ptrace() syscalls on dedicated threads (one t
 
 But this requires the permission for PTRACE_ATTACH. And on some systems, this permission is blocked, and tracer can only attach to their direct children from main threads.
 
-## Fallback mode
+## Fallback mode (single-threaded)
 
 If the host OS does not permit PTRACE_ATTACH, pocker will try to cumulate ptrace() syscalls on main thread from all tracee processes, and offload each tracee's own event loop and calculations to other threads. (Main thread is busy executing ptrace() calls while other threads queue ptrace actions)
 
@@ -24,12 +24,12 @@ If the host OS does not permit PTRACE_ATTACH, pocker will try to cumulate ptrace
 
 ## Project structure
 
-Sysaug crate contains the core logics of pconainer. The full name is System Augmentation, implying a backend, low level ability to modify specific syscalls (i.e. remapping path of openat())
+Sysaug crate contains the core logics of pconainer. The full name is System Augmentation, meaning a backend, low level ability to modify specific syscalls (such as remapping a path before it is sent to openat())
 
 Within `sysaug` crate, there are two major parts:
 
 * `aug_*.rs` defines Augments which have separate concerns based on the type of syscalls they augment
-* `handler.rs` defines the core "state machine" that translates TraceeHandlerConsts and various trackers of tracee's stack and hacky mmap injection addresses, into how exactly to rewrite every syscalls + followup on them in multi-step algorithms.
+* `handler_*.rs` defines the core "state machine" that translates TraceeHandlerConsts and various trackers of tracee's stack and hacky mmap injection addresses, into how exactly to rewrite every syscalls + followup on them in multi-step algorithms.
 
 Additionally, 
 
@@ -40,22 +40,28 @@ Additionally,
 
 This `PtraceAsyncRuntime` is mostly an enabler of an anti-pattern: I chose to write the state machine of a tracer using async syntax sugar, instead of manually writing out the state machine as literal switch case listing and migrating between all checkpoint states. Another added benefit of `PtraceAsyncRuntime` is that all logics within it are forced to run on the same thread, so I can avoid `Arc<Mutex<>>` and use `RefCell` instead.
 
-**Caveat**: this refactor from "synchronous spaghetti" to "async as a hacky state machine syntax" is still ongoing. You will see two hacky logics live next to each other. The synchronous logics use a ton of `Arc<Mutex<>>` types. And the async logics are always Pinned, not truly "async", and are more of a hacky use of the underlying state machine than a use of true async events
+## For Developers
 
-Right now the repo lives in a very bad state and has a lot more runtime overhead than needed. I intend to move fully into async in hope that removing Arc will fix some of the overhead. But I'm starting to think I misunderstood how Rust handles async, and how heavy it truly is.
+On Android, please install Rust through Termux: `pkg install rust`. After that, this project should compile with no issues.
 
-## For Developers (Note: this might be outdated)
+To actually run a chroot, you'd need to overwrite a few environment variables. Here is an example command:
+
+```bash
+PATH=/sbin:/usr/sbin:/bin:/usr/bin LD_PRELOAD="" target/debug/pocker-runtime --sudo --chroot ~/.pocker/storage/layers/sha256\:333125b5cee9fb6718bdcb523fc93b4adc71b7c37ada6146a20c193430e549b9/ --cmd /bin/bash
+
+# Then, run:
+cd /
+```
 
 How to debug problems:
 
-- `RUST_LOG=TRACE RUST_BACKTRACE=1 cargo run  -- --chroot xxx --root |& ansi2txt | tee ~/logfile | grep -v TRACE | grep -v DEBUG`
+```bash
+RUST_LOG=TRACE RUST_LOG_BLOCKING=1 RUST_LOG_NO_COLOR=1 RUST_BACKTRACE=1 RUST_LOG_DIR=~/.logs cargo run  -- --chroot xxx --root | grep -v TRACE | grep -v DEBUG
 
-Overhead: Tested on Android Termux:
+# Verbose debug logs will show up in both stderr, and in the ~/.logs/ folder
+```
 
-proot slows down `git status` to about 5x its original run time.
-
-- original total wall time: about 10ms
-- proot total wall time: about 50ms
+## Cross compilation (outdated instructions)
 
 As long as our parallel proot doesn't slow down the tracee by more than 5x. It should be fine.
 
@@ -80,11 +86,7 @@ Here are some (outdated) instructions about Android cross-compilation without Te
 
 ## AI Usage
 
-I use the same IDE across many projects. For a few days, I forgot to disable AI in this repository, so I have occasionally used AI to help review my code, especially during major updates like a Rust edition update.
-
-I don't use AI to directly generate large chunks of code in this repository. I have occasionally used it to speed up import edits especially on Windows, where Rust Analyzer had a hard time compiling `nix` crate using native toolchains.
-
-Since commit `c52081394cb4949304004b2167e65a6960051cc2`, I've disabled AI code completion for Rust and text files, because the suggestions are getting too noisy.
+I re-use the same IDE across many projects. When I use the AI coding functionalities, I only use the Cursor TAB model. This project doesn't contain unreviewed AI code, and doesn't include large patches of purely AI generated code.
 
 ## Prior project names
 
