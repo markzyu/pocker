@@ -169,6 +169,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 } else {
                     let links_dir = metadir.join("links");
                     let target_path = links_dir.join(uuid::Uuid::new_v4().to_string());
+                    std::fs::create_dir_all(&links_dir).map_err(SysAugError::CreateHardlinkIO)?;
                     std::fs::rename(path, &target_path).map_err(SysAugError::CreateHardlinkIO)?;
                     symlink(&target_path, path).map_err(SysAugError::CreateHardlinkIO)?;
                     target_path
