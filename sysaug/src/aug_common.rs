@@ -272,7 +272,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         mut visited: HashSet<PathBuf>,
         args: &[usize],
     ) -> Result<PathAction, SysAugError> {
-        event!(Level::DEBUG, "Following symlink {:?}", orig_path);
         visited.insert(orig_path.into());
         let action = self.calc_real_path_simple(orig_path, syscall).await?;
         if let PathAction::Override(real_path) = &action {
@@ -394,8 +393,16 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         syscall: &SyscallInfo,
         args: &[usize],
     ) -> Result<PathAction, SysAugError> {
-        self.calc_real_path_recurse(orig_path, syscall, HashSet::new(), args)
-            .await
+        let result = self
+            .calc_real_path_recurse(orig_path, syscall, HashSet::new(), args)
+            .await?;
+        event!(
+            Level::DEBUG,
+            "Following symlink {:?} -> {:?}",
+            orig_path,
+            &result
+        );
+        Ok(result)
     }
 
     // There are SysAugConfig configurations that can "modify" a guest/host path. This function applies them.
