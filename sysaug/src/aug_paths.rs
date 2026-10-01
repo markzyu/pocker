@@ -187,6 +187,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let i = i as usize;
             let j = j as usize;
             if let Some(path) = save_paths[i].as_ref()
+                && let path = path.canonicalize().map_err(SysAugError::CreateHardlinkIO)?
                 && path.exists()
             {
                 let target_path = if path.starts_with(&metadir) {
@@ -199,18 +200,18 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
                     // First, move the metadata
                     std::fs::create_dir_all(&links_dir).map_err(SysAugError::CreateHardlinkIO)?;
-                    if let Some(old_meta) = self.get_metadata_path(path)? {
+                    if let Some(old_meta) = self.get_metadata_path(&path)? {
                         let _ = std::fs::rename(&old_meta, &new_meta)
                             .map_err(SysAugError::CreateHardlinkIO)
                             .map_err(display_err);
                     };
 
                     // Then, move the link content
-                    std::fs::rename(path, &target_path).map_err(SysAugError::CreateHardlinkIO)?;
+                    std::fs::rename(&path, &target_path).map_err(SysAugError::CreateHardlinkIO)?;
 
                     // Then, setup symlinks
-                    symlink(&target_path, path).map_err(SysAugError::CreateHardlinkIO)?;
-                    self.increment_hardlink_counter(path)?;
+                    symlink(&target_path, &path).map_err(SysAugError::CreateHardlinkIO)?;
+                    self.increment_hardlink_counter(&path)?;
                     target_path
                 };
 

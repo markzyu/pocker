@@ -8,6 +8,8 @@ import tarfile
 import time
 import unittest as t
 
+DEBUGENV = {"RUST_LOG": "TRACE", "RUST_LOG_BLOCKING": "1"}
+
 
 class TestRootFs(t.TestCase):
     maxDiff = 8192
@@ -74,7 +76,6 @@ class TestRootFs(t.TestCase):
             echo "[POCKER] [CREATED TAR]" >&2
             """.encode(),
             rootfs=True,
-            env={"RUST_LOG": "TRACE", "RUST_LOG_BLOCKING": "1"},
             **kwargs,
         )
         self.assertEqual(ans.returncode, 0)
