@@ -59,6 +59,9 @@ jobs:
       - name: Run integration tests
         run: RUST_LOG=INFO bash tests.sh
 
+      - name: Run alpine container
+        run: LD_PRELOAD="" cargo run --bin pocker -- run alpine
+
   lints:
     name: Lints and Unit Tests
     runs-on: ubuntu-latest
