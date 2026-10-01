@@ -372,8 +372,7 @@ fn run_instance(
         std::env::set_var("PATH", "/bin:/sbin:/usr/bin:/usr/sbin");
     }
 
-    let mut cmd = std::process::Command::new(&cmd);
-    cmd.env("LD_PRELOAD", "");
+    let cmd = std::process::Command::new(&cmd);
     match launch_ptrace(args2, cmd, args.fix_attach, shared_fd, mmap_addr) {
         Err(e) => bail!("Error: {:?}", e),
         Ok(ans) => Ok(ans),
