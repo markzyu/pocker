@@ -50,7 +50,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             orig_regs.arg3,
             orig_regs.arg4,
         ];
-        let mut write_args = [
+        let write_args = [
             &mut orig_regs.arg0,
             &mut orig_regs.arg1,
             &mut orig_regs.arg2,
@@ -60,13 +60,13 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let mut need_write_regs = false;
         let mut need_skip_syscall: Option<usize> = None;
         let mut save_paths: [Option<PathBuf>; 4] = Default::default();
-        for (i, ref_arg_i) in write_args.iter_mut().enumerate() {
+        for i in 0..read_args.len() {
             let check_bit: usize = 1 << i;
             if (check_bit & syscall.path_positions) == 0 {
                 continue;
             }
-            let arg_i = **ref_arg_i;
-            if **ref_arg_i == 0 {
+            let arg_i = read_args[i];
+            if arg_i == 0 {
                 continue;
             }
 
@@ -75,6 +75,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 .unwrap_or("".into());
 
             // Read orig_path from registers
+            // TODO: This can cause buffer overflow if tracee is malicious.
             let path_bytes =
                 ptrace_client.execute(move || (read_bytes_until_zero)(pid, arg_i))??;
             let orig_path_buf = Self::path_from_bytes(path_bytes)?;
@@ -92,7 +93,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                         dirfd_path.join(&new_path_val)
                     };
                     save_paths[i] = Some(input_path);
-                    **ref_arg_i = self.tracee_stack_append_path(new_path_val)?;
                     need_write_regs = true;
                 }
                 PathAction::ELOOP => {
@@ -132,6 +132,28 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let ref_save_paths = &save_paths;
             for path in ref_save_paths.iter().flatten() {
                 self.delete_metadata_for_file(path)?;
+            }
+        }
+
+        // Handle stat syscalls for hardlinks
+        let is_stat = syscall.stat_buf_position.is_some()
+            || syscall.stat_legacy_buf_position.is_some()
+            || syscall.stat64_buf_position.is_some()
+            || syscall.statx_buf_position.is_some();
+        if is_stat {
+            let stat_path = save_paths.iter_mut().find_map(|x| x.as_mut()).ok_or(
+                SysAugError::SyscallMissingField(
+                    "stat syscalls don't have a corresponding path/fd to read from",
+                ),
+            )?;
+            if let Some(meta) = self.read_metadata_for_file(stat_path)? {
+                if meta.hardlink_counter.is_some() {
+                    // Resolve the actual path of the hardlink
+                    *stat_path = stat_path
+                        .canonicalize()
+                        .map_err(SysAugError::StatHardlinkIO)?;
+                    need_write_regs = true;
+                }
             }
         }
 
@@ -190,6 +212,11 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         }
 
         if need_write_regs && need_skip_syscall.is_none() {
+            for i in 0..save_paths.len() {
+                if let Some(path) = save_paths[i].as_ref() {
+                    *write_args[i] = self.tracee_stack_append_path(path.clone())?;
+                }
+            }
             // Update registers, before real syscall
             ptrace_client.execute(move || setregs(pid, orig_regs))??;
         }

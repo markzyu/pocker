@@ -163,6 +163,9 @@ pub enum SysAugError {
 
     #[error("Failed to move metadata: {0}")]
     RenameMetadata(std::io::Error),
+
+    #[error("Failed to stat the backing file of a hardlink: {0}")]
+    StatHardlinkIO(std::io::Error),
 }
 
 #[derive(Clone, Debug, Default)]
