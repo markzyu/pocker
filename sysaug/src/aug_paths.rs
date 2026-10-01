@@ -189,6 +189,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             if let Some(path) = save_paths[i].as_ref()
                 && let path = path.canonicalize().map_err(SysAugError::CreateHardlinkIO)?
                 && path.exists()
+                && let Some(result_path) = save_paths[j].as_ref()
             {
                 let target_path = if path.starts_with(&metadir) {
                     path.clone()
@@ -215,7 +216,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     target_path
                 };
 
-                let result_path = save_paths[j].as_ref().unwrap();
                 let rootfs_path = self.consts.args.rootfs.as_ref().unwrap();
                 if !result_path.starts_with(rootfs_path) {
                     need_skip_syscall.replace(EACCES);
@@ -223,6 +223,31 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     need_skip_syscall.replace(EEXIST);
                 } else {
                     symlink(&target_path, result_path).map_err(SysAugError::CreateHardlinkIO)?;
+                    need_skip_syscall.replace(0);
+                }
+            }
+        }
+
+        // Handle rename when target is a hardlink
+        if let Some((i, j)) = syscall.renames_metadata
+            && let Some(metadir) = self.get_metadata_dir()
+        {
+            let i = i as usize;
+            let j = j as usize;
+            if let Some(path1) = save_paths[i].as_ref()
+                && let path1 = path1
+                    .canonicalize()
+                    .map_err(SysAugError::CreateHardlinkIO)?
+                && path1.exists()
+                && let Some(path2) = save_paths[j].as_ref()
+                && let path2 = path2
+                    .canonicalize()
+                    .map_err(SysAugError::CreateHardlinkIO)?
+                && path2.exists()
+            {
+                let is_hardlink1 = path1.starts_with(&metadir);
+                let is_hardlink2 = path2.starts_with(&metadir);
+                if is_hardlink1 && is_hardlink2 && path1 == path2 {
                     need_skip_syscall.replace(0);
                 }
             }
@@ -292,6 +317,31 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         _args: &[usize],
         save_paths: &[Option<PathBuf>],
     ) -> Result<(), SysAugError> {
+        // Skip metadata changes if we renamed two hardlinks of the same content
+        if let Some((i, j)) = syscall.renames_metadata
+            && let Some(metadir) = self.get_metadata_dir()
+        {
+            let i = i as usize;
+            let j = j as usize;
+            if let Some(path1) = save_paths[i].as_ref()
+                && let path1 = path1
+                    .canonicalize()
+                    .map_err(SysAugError::CreateHardlinkIO)?
+                && path1.exists()
+                && let Some(path2) = save_paths[j].as_ref()
+                && let path2 = path2
+                    .canonicalize()
+                    .map_err(SysAugError::CreateHardlinkIO)?
+                && path2.exists()
+            {
+                let is_hardlink1 = path1.starts_with(&metadir);
+                let is_hardlink2 = path2.starts_with(&metadir);
+                if is_hardlink1 && is_hardlink2 && path1 == path2 {
+                    return Ok(());
+                }
+            }
+        }
+
         if let Some((i, j)) = syscall.renames_metadata {
             let i = i as usize;
             let j = j as usize;
