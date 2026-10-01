@@ -176,21 +176,21 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         if !path.exists() {
             return Ok(None);
         }
+
+        // Note: canonicalize() will also resolve symlinks
         let Ok(canonical_path) = path.canonicalize() else {
             return Ok(None);
         };
 
         // Case 1: The file is a hardlink, whose target is stored within the metadata dir
-        if let Ok(Some(link_target_path)) = self._read_symlink(&canonical_path) {
-            if link_target_path.strip_prefix(&metadir).is_ok() {
-                let Some(basename) = link_target_path.file_name() else {
-                    return Ok(None);
-                };
+        if canonical_path.strip_prefix(&metadir).is_ok() {
+            let Some(basename) = canonical_path.file_name() else {
+                return Ok(None);
+            };
 
-                let mut basename = basename.to_os_string();
-                basename.push(".json");
-                return Ok(Some(link_target_path.with_file_name(&basename)));
-            }
+            let mut basename = basename.to_os_string();
+            basename.push(".json");
+            return Ok(Some(canonical_path.with_file_name(&basename)));
         }
 
         // Case 2: The file is stored in the rootfs dir
