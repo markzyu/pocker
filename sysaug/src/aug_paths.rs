@@ -145,10 +145,10 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 if meta.hardlink_counter.is_some() {
                     // Resolve the actual path of the hardlink
                     *path = path.canonicalize().map_err(SysAugError::StatHardlinkIO)?;
-                    need_write_regs = true;
+                    let i = save_paths.iter().position(|x| x.is_some()).unwrap();
+                    need_write_paths |= 1 << i;
 
                     // Set dirfd to AT_FDCWD to avoid ELOOP on some Linux
-                    let i = save_paths.iter().position(|x| x.is_some()).unwrap();
                     if syscall.dirfd_precedes_path {
                         *write_args[i - 1] = libc::AT_FDCWD as usize;
                     }
