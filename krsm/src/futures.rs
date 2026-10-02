@@ -83,7 +83,7 @@ struct AsyncYielderFuture<'a> {
 ///
 /// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
 /// the same future across many `futures_lite::future::zip()` branches.
-/// 
+///
 /// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`
 ///
 /// You can obtain one by calling [upgrade] on any [Future]
@@ -120,7 +120,7 @@ pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
 ///
 /// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
 /// the same future across many `futures_lite::future::zip()` branches.
-/// 
+///
 /// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`
 ///
 /// You can obtain one by calling [downgrade] on any [StrongWeakBuilder]
@@ -351,10 +351,10 @@ impl<'a, T> Future for WeakFuture<'a, T> {
     }
 }
 
-impl<'a, T, F, F2> Future for StrongFuture<'a, T, F, F2> 
+impl<'a, T, F, F2> Future for StrongFuture<'a, T, F, F2>
 where
     F: Future<Output = T>,
-    F2: Future
+    F2: Future,
 {
     type Output = F2::Output;
 
@@ -365,9 +365,9 @@ where
             Poll::Pending => Poll::Pending,
             Poll::Ready(v) => {
                 self.result.replace(Some(v));
-                
+
                 let mut future2 = self.weak_wrapper.borrow_mut();
-                let pinned2 = unsafe { Pin::new_unchecked(&mut *future2)};
+                let pinned2 = unsafe { Pin::new_unchecked(&mut *future2) };
                 pinned2.poll(cx)
             }
         }
@@ -377,16 +377,16 @@ where
 /// Upgrades any future to obtain a [StrongWeakBuilder], which builds a [StrongFuture]
 ///
 /// Caveat: This [StrongFuture] consumes your original future. This means two things:
-/// 
+///
 /// 1. You **must** await on [StrongWeakBuilder::build]. Otherwise, the original future won't run at all.
 /// 2. You **must** create a [WeakFuture] to obtain access to the resulting data.
-/// 
+///
 /// Why?
-/// 
+///
 /// This strong-weak execution model helps if you need multiple "Weak" references to
 /// the same future, so that different handling logics can blend together, using a
-/// `futures_lite::future::zip()` call. 
-/// 
+/// `futures_lite::future::zip()` call.
+///
 /// The zipped future is called a `weak_wrapper`.
 pub fn upgrade<'a, T, F>(future: F) -> StrongWeakBuilder<T, F>
 where
@@ -418,11 +418,15 @@ impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
     /// This function allows you to pass [WeakFuture] instances to async wrapper functions,
     /// And then run the resulting `weak_wrapper` future, along with the original strong future.
     pub fn build<F2>(&self, weak_wrapper: F2) -> StrongFuture<'_, T, F, F2>
-    where 
+    where
         F: Future<Output = T>,
-        F2: Future
+        F2: Future,
     {
-        StrongFuture { weak_wrapper: RefCell::new(weak_wrapper), result: &self.result, timing: &self.timing }
+        StrongFuture {
+            weak_wrapper: RefCell::new(weak_wrapper),
+            result: &self.result,
+            timing: &self.timing,
+        }
     }
 }
 
@@ -657,14 +661,14 @@ mod tests {
                     let guard1 = futures::downgrade(&strong_future).await;
                     match guard1.as_ref().unwrap().as_ref() {
                         Ok(val1) => Ok::<i32, AsyncRuntimeError>(val1 * 5),
-                        Err(err) => Err::<i32, AsyncRuntimeError>(err.clone())
+                        Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
                     }
                 },
                 async {
                     let guard2 = futures::downgrade(&strong_future).await;
                     match guard2.as_ref().unwrap().as_ref() {
                         Ok(val2) => Ok::<i32, AsyncRuntimeError>(val2 * 6),
-                        Err(err) => Err::<i32, AsyncRuntimeError>(err.clone())
+                        Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
                     }
                 },
             );
