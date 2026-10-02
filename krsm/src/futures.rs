@@ -102,6 +102,14 @@ pub struct StrongFuture<T: PartialClone, F: Future<Output = T>> {
     _marker: PhantomPinned,
 }
 
+/// This is a Future that drives the completion of both a [StrongFuture] and its associated
+/// [WeakFuture] instances
+pub struct StrongWeakExecutionFuture<'a, T: PartialClone, F: Future<Output = T>, F2: Future> {
+    result: &'a RefCell<Option<T>>,
+    timing: &'a RefCell<F>,
+    weak_wrapper: RefCell<F2>,
+}
+
 /// A weak future is just a borrowed reference to a [StrongFuture]. You can have as
 /// many weak futures as you would like, by calling [downgrade]. However, just like weak `Arc`
 /// pointers, all [WeakFuture] references expire when your [StrongFuture] is dropped.
@@ -350,8 +358,13 @@ impl<'a, T: PartialClone> Future for WeakFuture<'a, T> {
     }
 }
 
-impl<T: PartialClone, F: Future<Output = T>> Future for StrongFuture<T, F> {
-    type Output = T::Partial;
+impl<'a, T, F, F2> Future for StrongWeakExecutionFuture<'a, T, F, F2> 
+where
+    T: PartialClone,
+    F: Future<Output = T>,
+    F2: Future
+{
+    type Output = F2::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut future = self.timing.borrow_mut();
@@ -359,9 +372,11 @@ impl<T: PartialClone, F: Future<Output = T>> Future for StrongFuture<T, F> {
         match pinned.poll(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(v) => {
-                let partial = v.partial_clone();
                 self.result.replace(Some(v));
-                Poll::Ready(partial)
+                
+                let mut future2 = self.weak_wrapper.borrow_mut();
+                let pinned2 = unsafe { Pin::new_unchecked(&mut *future2)};
+                pinned2.poll(cx)
             }
         }
     }
@@ -379,8 +394,11 @@ impl<T, E> PartialClone for Result<T, E> {
 
 /// Upgrades any future to obtain a [StrongFuture]
 ///
-/// Caveat: This strong future returns `Result<(), ()>` instead of the original data.
-/// To obtain access to the data, use a [WeakFuture]
+/// Caveat: This [StrongFuture] consumes your original futures, and resolves to `Result<(), ()>`
+/// instead of the original data. This means two things:
+/// 
+/// 1. You **must** await on [StrongFuture::execute]. Otherwise, the original future won't run at all.
+/// 2. You **must** create a [WeakFuture] to obtain access to the resulting data.
 pub fn upgrade<'a, T, F>(future: F) -> StrongFuture<T, F>
 where
     T: PartialClone,
@@ -407,6 +425,17 @@ where
     WeakFuture {
         result: &strong.result,
     }
+}
+
+/// This function allows you to pass [WeakFuture] instances to async wrapper functions,
+/// And then run the resulting `weak_wrapper` future, along with the original strong future.
+pub fn strong_weak<'a, T, F, F2>(strong: &'a StrongFuture<T, F>, weak_wrapper: F2) -> StrongWeakExecutionFuture<'a, T, F, F2>
+where 
+    T: PartialClone,
+    F: Future<Output = T>,
+    F2: Future
+{
+    StrongWeakExecutionFuture { weak_wrapper: RefCell::new(weak_wrapper), result: &strong.result, timing: &strong.timing }
 }
 
 #[cfg(test)]
@@ -622,6 +651,51 @@ mod tests {
         assert_eq!(runtime._pending_futures_size(), 1);
         _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
         assert_eq!(output, Some(Ok(456)));
+        assert!(!runtime._has_new_blockage());
+    }
+
+    #[test]
+    fn test_strong_weak_futures_can_be_used_to_blend_logics() {
+        let runtime = PtraceAsyncRuntime::new();
+        let strong_future = futures::upgrade(async {
+            runtime
+                .new_pending_future(PtraceFutureTypes::WaitForSignal)
+                .await?;
+            Ok::<i32, AsyncRuntimeError>(100)
+        });
+        let mut test_future = pin!(async {
+            let weak_wrapper = futures_lite::future::zip(
+                async {
+                    let guard1 = futures::downgrade(&strong_future).await;
+                    match guard1.as_ref().unwrap().as_ref() {
+                        Ok(val1) => Ok::<i32, AsyncRuntimeError>(val1 * 5),
+                        Err(err) => Err::<i32, AsyncRuntimeError>(err.clone())
+                    }
+                },
+                async {
+                    let guard2 = futures::downgrade(&strong_future).await;
+                    match guard2.as_ref().unwrap().as_ref() {
+                        Ok(val2) => Ok::<i32, AsyncRuntimeError>(val2 * 6),
+                        Err(err) => Err::<i32, AsyncRuntimeError>(err.clone())
+                    }
+                },
+            );
+            let (result1, result2) = futures::strong_weak(&strong_future, weak_wrapper).await;
+            Ok::<i32, AsyncRuntimeError>(result1? + result2?)
+        });
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
+        assert!(runtime._has_new_blockage());
+        assert_eq!(runtime._pending_futures_size(), 1);
+        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
+
+        // Unblock the future
+        let event = PtraceStatus {};
+        runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event.clone());
+        let output = runtime.run_async_step(&mut test_future);
+
+        assert_eq!(runtime._pending_futures_size(), 0);
+        assert_eq!(strong_future.result.borrow().clone(), Some(Ok(100)));
+        assert_eq!(output, Some(Ok(1100)));
         assert!(!runtime._has_new_blockage());
     }
 

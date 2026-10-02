@@ -2,7 +2,7 @@
 use core::cell::RefCell;
 use thiserror::Error;
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum AsyncRuntimeError {
     #[error("Cannot enqueue more pending futures, exceeding MAX_PENDING")]
     TooManyPending,
