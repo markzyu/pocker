@@ -71,48 +71,39 @@ struct AsyncYielderFuture<'a> {
     async_yielder: &'a AsyncYielder,
 }
 
-/// Something can have a partial clone, if it vaguely represents the variant
-/// typing information of that original thing, without retaining the data.
-///
-/// For example, a partial clone of `Result<String, MyError>` is just `Result<(), ()>`
-pub trait PartialClone {
-    type Partial;
-    fn partial_clone(&self) -> Self::Partial;
-}
-
-/// A strong future is just a RefCell holding the original future. It's only "strong" in the
-/// sense that it can be `downgraded` into a large number of "weak" references.
+/// This is a builder struct + RAII guard, for both [StrongFuture] and [WeakFuture]
 ///
 /// **What is Strong? and what is Weak?**
 ///
-/// The "strong-weak" naming is really to highlight the ownership coupling between the two.
-/// But a better name for this pair would have been "timing-data":
+/// The "strong-weak" naming is meant to highlight the borrow relationship between the two.
+/// But another name for this pair could be "timing-data":
 ///
-/// * The [StrongFuture] holds the timing of the original future, and resolves to a "partial
-///  clone" of the original result. (Think `Result<(), ()>` instead of `Result<T, E>`)
+/// * The [StrongFuture] holds ownership of the original future, and drives it execution.
 /// * The [WeakFuture] holds a readonly reference to the resulting data of the original future
 ///
 /// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
-/// the same future across many `futures_lite::future::zip` branches.
+/// the same future across many `futures_lite::future::zip()` branches.
+/// 
+/// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`
 ///
 /// You can obtain one by calling [upgrade] on any [Future]
-pub struct StrongFuture<T: PartialClone, F: Future<Output = T>> {
+pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
     result: RefCell<Option<T>>,
     timing: RefCell<F>,
     _marker: PhantomPinned,
 }
 
-/// This is a Future that drives the completion of both a [StrongFuture] and its associated
+/// This is a Future that drives the completion of both the original future, and any related
 /// [WeakFuture] instances
-pub struct StrongWeakExecutionFuture<'a, T: PartialClone, F: Future<Output = T>, F2: Future> {
+pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
     result: &'a RefCell<Option<T>>,
     timing: &'a RefCell<F>,
     weak_wrapper: RefCell<F2>,
 }
 
-/// A weak future is just a borrowed reference to a [StrongFuture]. You can have as
+/// A weak future is like a borrowed reference to a [StrongFuture]. You can have as
 /// many weak futures as you would like, by calling [downgrade]. However, just like weak `Arc`
-/// pointers, all [WeakFuture] references expire when your [StrongFuture] is dropped.
+/// pointers, all [WeakFuture] references expire when your [StrongWeakBuilder] is dropped.
 ///
 /// And, there is an additional catch:
 ///
@@ -121,17 +112,19 @@ pub struct StrongWeakExecutionFuture<'a, T: PartialClone, F: Future<Output = T>,
 ///
 /// **What is Strong? and what is Weak?**
 ///
-/// The "strong-weak" naming is really to highlight the ownership coupling between the two.
-/// But a better name for this pair would have been "timing-data":
+/// The "strong-weak" naming is meant to highlight the borrow relationship between the two.
+/// But another name for this pair could be "timing-data":
 ///
-/// * The [StrongFuture] holds the timing of the original future, and resolves to `Result<(), ()>`
+/// * The [StrongFuture] holds ownership of the original future, and drives it execution.
 /// * The [WeakFuture] holds a readonly reference to the resulting data of the original future
 ///
 /// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
-/// the same future across many `futures_lite::future::zip` branches.
+/// the same future across many `futures_lite::future::zip()` branches.
+/// 
+/// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`
 ///
-/// You can obtain one by calling [downgrade] on any [StrongFuture]
-pub struct WeakFuture<'a, T: PartialClone> {
+/// You can obtain one by calling [downgrade] on any [StrongWeakBuilder]
+pub struct WeakFuture<'a, T> {
     result: &'a RefCell<Option<T>>,
 }
 
@@ -346,7 +339,7 @@ impl<'a> Future for AsyncYielderFuture<'a> {
     }
 }
 
-impl<'a, T: PartialClone> Future for WeakFuture<'a, T> {
+impl<'a, T> Future for WeakFuture<'a, T> {
     type Output = Ref<'a, Option<T>>;
 
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
@@ -358,9 +351,8 @@ impl<'a, T: PartialClone> Future for WeakFuture<'a, T> {
     }
 }
 
-impl<'a, T, F, F2> Future for StrongWeakExecutionFuture<'a, T, F, F2> 
+impl<'a, T, F, F2> Future for StrongFuture<'a, T, F, F2> 
 where
-    T: PartialClone,
     F: Future<Output = T>,
     F2: Future
 {
@@ -382,29 +374,25 @@ where
     }
 }
 
-impl<T, E> PartialClone for Result<T, E> {
-    type Partial = Result<(), ()>;
-    fn partial_clone(&self) -> Self::Partial {
-        match self.as_ref() {
-            Ok(_) => Ok(()),
-            Err(_) => Err(()),
-        }
-    }
-}
-
-/// Upgrades any future to obtain a [StrongFuture]
+/// Upgrades any future to obtain a [StrongWeakBuilder], which builds a [StrongFuture]
 ///
-/// Caveat: This [StrongFuture] consumes your original futures, and resolves to `Result<(), ()>`
-/// instead of the original data. This means two things:
+/// Caveat: This [StrongFuture] consumes your original future. This means two things:
 /// 
-/// 1. You **must** await on [StrongFuture::execute]. Otherwise, the original future won't run at all.
+/// 1. You **must** await on [StrongWeakBuilder::build]. Otherwise, the original future won't run at all.
 /// 2. You **must** create a [WeakFuture] to obtain access to the resulting data.
-pub fn upgrade<'a, T, F>(future: F) -> StrongFuture<T, F>
+/// 
+/// Why?
+/// 
+/// This strong-weak execution model helps if you need multiple "Weak" references to
+/// the same future, so that different handling logics can blend together, using a
+/// `futures_lite::future::zip()` call. 
+/// 
+/// The zipped future is called a `weak_wrapper`.
+pub fn upgrade<'a, T, F>(future: F) -> StrongWeakBuilder<T, F>
 where
-    T: PartialClone,
     F: Future<Output = T>,
 {
-    StrongFuture {
+    StrongWeakBuilder {
         result: RefCell::new(None),
         timing: RefCell::new(future),
         _marker: PhantomPinned::default(),
@@ -417,9 +405,8 @@ where
 ///
 /// Caveat: The result from `weak_future.await` is a [core::cell::Ref] guard. And you **must** drop this guard
 /// manually before any `await` in your own async code. Otherwise, Rust **will panic**.
-pub fn downgrade<'a, T, F>(strong: &'a StrongFuture<T, F>) -> WeakFuture<'a, T>
+pub fn downgrade<'a, T, F>(strong: &'a StrongWeakBuilder<T, F>) -> WeakFuture<'a, T>
 where
-    T: PartialClone,
     F: Future<Output = T>,
 {
     WeakFuture {
@@ -427,15 +414,16 @@ where
     }
 }
 
-/// This function allows you to pass [WeakFuture] instances to async wrapper functions,
-/// And then run the resulting `weak_wrapper` future, along with the original strong future.
-pub fn strong_weak<'a, T, F, F2>(strong: &'a StrongFuture<T, F>, weak_wrapper: F2) -> StrongWeakExecutionFuture<'a, T, F, F2>
-where 
-    T: PartialClone,
-    F: Future<Output = T>,
-    F2: Future
-{
-    StrongWeakExecutionFuture { weak_wrapper: RefCell::new(weak_wrapper), result: &strong.result, timing: &strong.timing }
+impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
+    /// This function allows you to pass [WeakFuture] instances to async wrapper functions,
+    /// And then run the resulting `weak_wrapper` future, along with the original strong future.
+    pub fn build<F2>(&self, weak_wrapper: F2) -> StrongFuture<'_, T, F, F2>
+    where 
+        F: Future<Output = T>,
+        F2: Future
+    {
+        StrongFuture { weak_wrapper: RefCell::new(weak_wrapper), result: &self.result, timing: &self.timing }
+    }
 }
 
 #[cfg(test)]
@@ -680,7 +668,7 @@ mod tests {
                     }
                 },
             );
-            let (result1, result2) = futures::strong_weak(&strong_future, weak_wrapper).await;
+            let (result1, result2) = strong_future.build(weak_wrapper).await;
             Ok::<i32, AsyncRuntimeError>(result1? + result2?)
         });
         assert_eq!(runtime.run_async_step(&mut test_future), None);
