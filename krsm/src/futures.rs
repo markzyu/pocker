@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR GPL-3.0-or-later
 use crate::common::{AsyncRuntimeError, FixedSizedMap};
-use core::cell::RefCell;
+use core::cell::{Ref, RefCell};
 use core::future::Future;
+use core::marker::PhantomPinned;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
@@ -70,7 +71,53 @@ struct AsyncYielderFuture<'a> {
     async_yielder: &'a AsyncYielder,
 }
 
-type Result<T> = core::result::Result<T, AsyncRuntimeError>;
+/// A strong future is just a RefCell holding the original future. It's only "strong" in the
+/// sense that it can be `downgraded` into a large number of "weak" references.
+/// 
+/// **What is Strong? and what is Weak?**
+/// 
+/// The "strong-weak" naming is really to highlight the ownership coupling between the two.
+/// But a better name for this pair would have been "timing-data":
+/// 
+/// * The [StrongFuture] holds the timing of the original future, and resolves to `Result<(), ()>`
+/// * The [WeakFuture] holds a readonly reference to the resulting data of the original future
+/// 
+/// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
+/// the same future across many `futures_lite::future::zip` branches.
+/// 
+/// You can obtain one by calling [upgrade] on any [Future]
+pub struct StrongFuture<T, E, F: Future<Output = Result<T, E>>> {
+    result: RefCell<Option<Result<T, E>>>,
+    timing: RefCell<F>,
+    _marker: PhantomPinned
+}
+
+/// A weak future is just a borrowed reference to a [StrongFuture]. You can have as
+/// many weak futures as you would like, by calling [downgrade]. However, just like weak `Arc`
+/// pointers, all [WeakFuture] references expire when your [StrongFuture] is dropped. 
+/// 
+/// And, there is an additional catch:
+///
+/// > The result from `weak_future.await` is a [core::cell::Ref] guard. And you **must** drop this guard
+/// > manually before any `await` in your own async code. Otherwise, Rust **will panic**.
+/// 
+/// **What is Strong? and what is Weak?**
+/// 
+/// The "strong-weak" naming is really to highlight the ownership coupling between the two.
+/// But a better name for this pair would have been "timing-data":
+/// 
+/// * The [StrongFuture] holds the timing of the original future, and resolves to `Result<(), ()>`
+/// * The [WeakFuture] holds a readonly reference to the resulting data of the original future
+/// 
+/// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
+/// the same future across many `futures_lite::future::zip` branches.
+/// 
+/// You can obtain one by calling [downgrade] on any [StrongFuture]
+pub struct WeakFuture<'a, T, E> {
+    result: &'a RefCell<Option<Result<T, E>>>,
+}
+
+type AsyncResult<T> = core::result::Result<T, AsyncRuntimeError>;
 
 const RAW_WAKER_SHOULD_NOT_BE_CALLED: &str =
     "Internal error, KRSM Async Runtime detected invalid usage of external async library";
@@ -112,7 +159,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
     ///
     /// Your async code should have access to this method. This is the **primary method**
     /// through which your async code yields back during an async step.
-    pub async fn new_pending_future(&self, future_type: YieldReason) -> Result<YieldResponse> {
+    pub async fn new_pending_future(&self, future_type: YieldReason) -> AsyncResult<YieldResponse> {
         let guard = FutureDropGuard::<YieldReason, YieldResponse, MAX_PENDING> {
             future_type,
             runtime: self,
@@ -223,7 +270,7 @@ impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize> 
 impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
     FutureDropGuard<'a, YieldReason, YieldResponse, MAX_PENDING>
 {
-    async fn create_future(&'a self) -> Result<YieldResponse> {
+    async fn create_future(&'a self) -> AsyncResult<YieldResponse> {
         let future = BasicFuture {
             future_type: self.future_type,
             runtime: self.runtime,
@@ -278,6 +325,68 @@ impl<'a> Future for AsyncYielderFuture<'a> {
         } else {
             Poll::Ready(())
         }
+    }
+}
+
+impl<'a, T, E> Future for WeakFuture<'a, T, E> {
+    type Output = Ref<'a, Option<Result<T, E>>>;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        let is_some = { self.result.borrow().is_some() };
+        match is_some {
+            true => Poll::Ready(self.result.borrow()),
+            false => Poll::Pending,
+        }
+    }
+}
+
+impl<T, E, F: Future<Output = Result<T, E>>> Future for StrongFuture<T, E, F> {
+    type Output = Result<(), ()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut future = self.timing.borrow_mut();
+        let pinned = unsafe { Pin::new_unchecked(&mut *future) };
+        match pinned.poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(v)) => {
+                self.result.replace(Some(Ok(v)));
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(e)) => {
+                self.result.replace(Some(Err(e)));
+                Poll::Ready(Err(()))
+            }
+        }
+    }
+}
+
+/// Upgrades any future to obtain a [StrongFuture]
+///
+/// Caveat: This strong future returns `Result<(), ()>` instead of the original data. 
+/// To obtain access to the data, use a [WeakFuture]
+pub fn upgrade<'a, T, E, F>(future: F) -> StrongFuture<T, E, F>
+where
+    F: Future<Output = Result<T, E>>,
+{
+    StrongFuture {
+        result: RefCell::new(None),
+        timing: RefCell::new(future),
+        _marker: PhantomPinned::default()
+    }
+}
+
+/// Obtains a [WeakFuture], which is a borrowed reference to a [StrongFuture]
+///
+/// This reference serves as a new Future that can be awaited on.
+///
+/// Caveat: The result from `weak_future.await` is a [core::cell::Ref] guard. And you **must** drop this guard
+/// manually before any `await` in your own async code. Otherwise, Rust **will panic**.
+pub fn downgrade<'a, T, E, F>(strong: &'a StrongFuture<T, E, F>) -> WeakFuture<'a, T, E>
+where
+    F: Future<Output = Result<T, E>>,
+{
+    WeakFuture {
+        result: &strong.result,
     }
 }
 
