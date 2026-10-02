@@ -142,7 +142,7 @@ impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
     }
 
     /// This is a function used for unit testing only. It doesn't actually reflect all blockages.
-    /// For example, AsyncYield's pending status won't be reflected here.
+    /// For example, [AsyncYielder]'s pending status won't be reflected here.
     pub(crate) fn _has_new_blockage(&self) -> bool {
         self.has_new_future.load(Ordering::Relaxed)
     }

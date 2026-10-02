@@ -6,7 +6,7 @@ use core::ops::Deref;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-/// AsyncYield is a helper for concurrent loops in async.
+/// AsyncYielder is a helper for concurrent loops in async.
 ///
 /// This is useful when your async future contains two or more competing loops:
 ///      `futures_lite::or(loop1, loop2).await`
