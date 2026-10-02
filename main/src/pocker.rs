@@ -21,9 +21,10 @@ use oci_spec::image::{Arch, Os};
 use pocker::{LaunchOptions, init_logging, launch_ptrace};
 use pocker_ptrace::setup_shared_memory;
 use pocker_sysaug::{PermsMode, SysAugArgs};
-use std::os::fd::AsRawFd;
-use std::{ffi::OsString, io::Write};
-use std::{os::fd::RawFd, path::PathBuf};
+use std::ffi::OsString;
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, RawFd};
+use std::path::PathBuf;
 use tracing::{Level, event};
 use webpki_root_certs::TLS_SERVER_ROOT_CERTS;
 
@@ -101,6 +102,9 @@ struct ImageDownloadArgs {
 
     #[arg(long, default_value_t = "library".to_string())]
     registry_namespace: String,
+
+    #[arg(long)]
+    redownload: bool,
 }
 
 impl ImageDownloadArgs {
@@ -133,10 +137,11 @@ fn main() -> anyhow::Result<()> {
             download,
         } => {
             let (shared_fd, mmap_addr) = setup_shared_memory().context("Preparing ptrace")?;
-            event!(Level::INFO, "Downloading image...");
             let storage_dir = get_storage_dir(&download)?;
-            let layers = download_image(
+            let layers = download_image(image.clone(), &launch, &download)?;
+            let layers = launch_ptrace_to_untar_layers(
                 image.clone(),
+                layers,
                 &launch,
                 download,
                 shared_fd.as_raw_fd(),
@@ -189,10 +194,18 @@ fn main() -> anyhow::Result<()> {
         } => {
             if let Some(layer) = internal_layer {
                 event!(Level::INFO, "Downloading layer {}...", &layer);
-                download_layer_from_tracee(layer, &download)?;
+                untar_layer_from_tracee(layer, &download)?;
             } else {
                 let (shared_fd, mmap_addr) = setup_shared_memory().context("Preparing ptrace")?;
-                download_image(image, &launch, download, shared_fd.as_raw_fd(), mmap_addr)?;
+                let layers = download_image(image.clone(), &launch, &download)?;
+                launch_ptrace_to_untar_layers(
+                    image,
+                    layers,
+                    &launch,
+                    download,
+                    shared_fd.as_raw_fd(),
+                    mmap_addr,
+                )?;
             }
             Ok(())
         }
@@ -227,14 +240,15 @@ fn resolver_for_linux(manifests: &[ImageIndexEntry]) -> Option<String> {
         .map(|entry| entry.digest.clone())
 }
 
-fn download_layer_from_tracee(layer: String, download: &ImageDownloadArgs) -> anyhow::Result<()> {
+fn untar_layer_from_tracee(layer: String, download: &ImageDownloadArgs) -> anyhow::Result<()> {
     let storage_dir = get_storage_dir(&download)?;
     let layers_dir = storage_dir.join("layers");
+    let cache_dir = storage_dir.join("cache");
     let tar_name = format!("{}.tar.gz", layer);
-    let layer_tar = layers_dir.join(tar_name);
+    let tar_path = cache_dir.join(tar_name);
     let layer_dir = layers_dir.join(&layer);
 
-    let tar_file = std::fs::File::open(layer_tar)?;
+    let tar_file = std::fs::File::open(tar_path)?;
     let mut gz = GzDecoder::new(tar_file);
     let mut tar = tar::Archive::new(&mut gz);
     tar.unpack(&layer_dir)?;
@@ -250,28 +264,72 @@ fn get_storage_dir(args: &ImageDownloadArgs) -> anyhow::Result<PathBuf> {
     Ok(storage_dir)
 }
 
+/// Downloads only the tar files, if they don't exist already.
+/// Returns a list of layer ids
 fn download_image(
     image_name: String,
-    launch: &LaunchOptions,
-    args: ImageDownloadArgs,
-    shared_fd: RawFd,
-    mmap_addr: usize,
-) -> anyhow::Result<Vec<PathBuf>> {
+    _launch: &LaunchOptions,
+    args: &ImageDownloadArgs,
+) -> anyhow::Result<Vec<String>> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all() // Enables both the I/O driver and the time driver
         .build()?;
 
     // 2. Execute the future, blocking the current thread until completion
+    let reference_str = if image_name.contains('/') {
+        format!("{}/{}", args.registry_host, &image_name)
+    } else {
+        format!(
+            "{}/{}/{}",
+            args.registry_host, args.registry_namespace, &image_name
+        )
+    };
+
+    let storage_dir = get_storage_dir(args)?;
+    let layers_dir = storage_dir.join("layers");
+    let cache_dir = storage_dir.join("cache");
+    std::fs::create_dir_all(&layers_dir).context("Creating pocker download cache")?;
+    std::fs::create_dir_all(&cache_dir).context("Creating pocker download cache")?;
+
+    let cache_name = reference_str
+        .strip_prefix(&args.registry_host)
+        .unwrap()
+        .replace("_", "__")
+        .replace("/", "_");
+    let cache_path = cache_dir.join(&cache_name);
+    if cache_path.exists() {
+        let err_ctx = "Checking cached image digests";
+        let mut file = std::fs::File::open(&cache_path).context(err_ctx)?;
+        let mut cached_image = String::new();
+        file.read_to_string(&mut cached_image).context(err_ctx)?;
+        let hashes: Vec<_> = cached_image.trim().split(",").collect();
+
+        let client = get_oci_client();
+        let reference: oci_client::Reference = reference_str.parse()?;
+        let auth = oci_client::secrets::RegistryAuth::Anonymous;
+        let (image, _) = rt.block_on(client.pull_image_manifest(&reference, &auth))?;
+
+        if hashes.len() > 0 && hashes.len() == image.layers.len() {
+            let actual: Vec<_> = hashes.iter().map(|x| x.to_string()).collect();
+            let expected: Vec<_> = image.layers.iter().map(|x| x.digest.clone()).collect();
+
+            if actual == expected && !args.redownload {
+                // TODO: actually check hashes of tar files
+                return Ok(actual);
+            }
+
+            event!(
+                Level::DEBUG,
+                "Redownloading layers, because {:?} != {:?}",
+                actual,
+                expected
+            );
+        }
+    }
+
+    event!(Level::INFO, "Downloading image...");
     let image: anyhow::Result<_> = rt.block_on(async {
         let client = get_oci_client();
-        let reference_str = if image_name.contains('/') {
-            format!("{}/{}", args.registry_host, &image_name)
-        } else {
-            format!(
-                "{}/{}/{}",
-                args.registry_host, args.registry_namespace, &image_name
-            )
-        };
         let reference: oci_client::Reference = reference_str.parse()?;
         let auth = oci_client::secrets::RegistryAuth::Anonymous;
         let image = client
@@ -281,31 +339,57 @@ fn download_image(
     });
     let image = image?;
 
-    let storage_dir = get_storage_dir(&args)?;
-    let layers_dir = storage_dir.join("layers");
-
-    let mut layer_dirs: Vec<PathBuf> = Vec::new();
+    let mut hashes: Vec<String> = Vec::new();
     for layer in image.layers {
         let digest = layer.sha256_digest();
-        let layer_dir = layers_dir.join(&digest);
-        layer_dirs.push(layer_dir.clone());
-
-        if layer_dir.is_dir() {
-            // TODO: verify folder content (path and size) at least
-            event!(Level::DEBUG, "Skipping download of layer {}", &digest);
-            continue;
-        }
+        hashes.push(digest.clone());
 
         if !layer.media_type.ends_with(".tar+gzip") {
             bail!("Unknown image format: {}", image.config.media_type);
         }
 
         let tar_name = format!("{}.tar.gz", &digest);
-        let layer_tar = layers_dir.join(&tar_name);
-        std::fs::create_dir_all(&layer_dir)?;
-        std::fs::write(&layer_tar, layer.data).context("Saving layer tarfile")?;
+        let tar_path = cache_dir.join(&tar_name);
+        std::fs::write(&tar_path, layer.data).context("Saving layer tarfile")?;
+    }
 
-        event!(Level::INFO, "Starting layer download {}", &digest);
+    let all_hashes = hashes.join(",");
+    let err_ctx = format!("Saving cached image digests: {:?}", &cache_path);
+    let mut file = std::fs::File::create(&cache_path).context(err_ctx.clone())?;
+    writeln!(file, "{}", all_hashes).context(err_ctx)?;
+
+    Ok(hashes)
+}
+
+fn launch_ptrace_to_untar_layers(
+    image_name: String,
+    layers: Vec<String>,
+    launch: &LaunchOptions,
+    args: ImageDownloadArgs,
+    shared_fd: RawFd,
+    mmap_addr: usize,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let storage_dir = get_storage_dir(&args)?;
+    let layers_dir = storage_dir.join("layers");
+
+    std::fs::create_dir_all(&layers_dir).context("Creating pocker download cache")?;
+
+    let mut layer_dirs: Vec<PathBuf> = Vec::new();
+    for digest in layers {
+        let layer_dir = layers_dir.join(&digest);
+        layer_dirs.push(layer_dir.clone());
+
+        if layer_dir.is_dir() {
+            if !args.redownload {
+                event!(Level::INFO, "Skipping untar of layer {}", &digest);
+                continue;
+            } else {
+                std::fs::remove_dir_all(&layer_dir)
+                    .context(format!("Redownloading layer {}", &digest))?;
+            }
+        }
+
+        event!(Level::INFO, "Starting to untar layer {}", &digest);
         let self_path = std::env::current_exe()?.canonicalize()?;
         let args2 = SysAugArgs {
             chroot: None,
@@ -334,7 +418,6 @@ fn download_image(
             bail!("Error: {:?}", e);
         }
     }
-
     Ok(layer_dirs)
 }
 
