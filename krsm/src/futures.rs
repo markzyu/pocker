@@ -75,19 +75,6 @@ struct AsyncYielderFuture<'a> {
 /// This is a builder struct + RAII guard, for both [StrongFuture] and [WeakFuture]
 ///
 /// You can obtain one by calling [upgrade] on any [Future]
-///
-/// **What is Strong? and what is Weak?**
-///
-/// The "strong-weak" naming is meant to highlight the borrow relationship between the two.
-/// But another name for this pair could be "timing-data":
-///
-/// * The [StrongFuture] holds ownership of the original future, and drives it execution.
-/// * The [WeakFuture] holds a readonly reference to the resulting data of the original future
-///
-/// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
-/// the same future across many `futures_lite::future::zip()` branches.
-///
-/// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`
 pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
     result: RefCell<Option<T>>,
     timing: RefCell<F>,
@@ -98,6 +85,20 @@ pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
 /// [WeakFuture] instances
 ///
 /// You can obtain one by calling [upgrade] on any [Future], and then calling [StrongWeakBuilder::build]
+///
+/// **What is Strong? and what is Weak?**
+///
+/// The "strong-weak" naming is meant to highlight the borrow relationship between the two.
+/// But another name for this pair could be "timing-data":
+///
+/// * The [StrongFuture] holds ownership of the original future, and drives it execution.
+/// * The [WeakFuture] holds a readonly reference to the `Future::Output` data of the original future
+///
+/// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
+/// the same future across many `futures_lite::future::zip()` branches.
+///
+/// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
     result: &'a RefCell<Option<T>>,
     timing: &'a RefCell<F>,
@@ -112,7 +113,7 @@ pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
 ///
 /// But there is a catch:
 ///
-/// > The result from `weak_future.await` is a [WeakFutureGuard]. And you **must** drop this guard
+/// > The output from `weak_future.await` is a [WeakFutureGuard]. And you **must** drop this guard
 /// > manually before any other `await` in your own async code. Otherwise, Rust **will panic**.
 ///
 /// **What is Strong? and what is Weak?**
@@ -121,17 +122,18 @@ pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
 /// But another name for this pair could be "timing-data":
 ///
 /// * The [StrongFuture] holds ownership of the original future, and drives it execution.
-/// * The [WeakFuture] holds a readonly reference to the resulting data of the original future
+/// * The [WeakFuture] holds a readonly reference to the `Future::Output` data of the original future
 ///
 /// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
 /// the same future across many `futures_lite::future::zip()` branches.
 ///
 /// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct WeakFuture<'a, T> {
     result: &'a RefCell<Option<T>>,
 }
 
-/// This is an RAII guard to help you access the result from `.await` of a [WeakFuture]
+/// This is an RAII guard to help you access the output from `.await` of a [WeakFuture]
 ///
 /// You **must** drop this guard manually before any other `await` in your own async code.
 /// Otherwise, Rust **will panic**.
@@ -437,7 +439,10 @@ where
 
 impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
     /// This function allows you to pass [WeakFuture] instances to async wrapper functions,
-    /// And then run the resulting `weak_wrapper` future, along with the original strong future.
+    /// as a `weak_wrapper` future, which can be, for example: `futures_lite::future::zip()`
+    ///
+    /// This function will build a [StrongFuture] which runs the resulting `weak_wrapper` future,
+    /// as well as the original future that was consumed by [upgrade].
     pub fn build<F2>(&self, weak_wrapper: F2) -> StrongFuture<'_, T, F, F2>
     where
         F: Future<Output = T>,
