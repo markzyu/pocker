@@ -73,6 +73,8 @@ struct AsyncYielderFuture<'a> {
 
 /// This is a builder struct + RAII guard, for both [StrongFuture] and [WeakFuture]
 ///
+/// You can obtain one by calling [upgrade] on any [Future]
+///
 /// **What is Strong? and what is Weak?**
 ///
 /// The "strong-weak" naming is meant to highlight the borrow relationship between the two.
@@ -85,8 +87,6 @@ struct AsyncYielderFuture<'a> {
 /// the same future across many `futures_lite::future::zip()` branches.
 ///
 /// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`
-///
-/// You can obtain one by calling [upgrade] on any [Future]
 pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
     result: RefCell<Option<T>>,
     timing: RefCell<F>,
@@ -105,7 +105,9 @@ pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
 /// many weak futures as you would like, by calling [downgrade]. However, just like weak `Arc`
 /// pointers, all [WeakFuture] references expire when your [StrongWeakBuilder] is dropped.
 ///
-/// And, there is an additional catch:
+/// You can obtain one by calling [downgrade] on any [StrongWeakBuilder]
+///
+/// But there is a catch:
 ///
 /// > The result from `weak_future.await` is a [core::cell::Ref] guard. And you **must** drop this guard
 /// > manually before any `await` in your own async code. Otherwise, Rust **will panic**.
@@ -122,8 +124,6 @@ pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
 /// the same future across many `futures_lite::future::zip()` branches.
 ///
 /// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`
-///
-/// You can obtain one by calling [downgrade] on any [StrongWeakBuilder]
 pub struct WeakFuture<'a, T> {
     result: &'a RefCell<Option<T>>,
 }
