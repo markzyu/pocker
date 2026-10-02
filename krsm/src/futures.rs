@@ -71,50 +71,60 @@ struct AsyncYielderFuture<'a> {
     async_yielder: &'a AsyncYielder,
 }
 
+/// Something can have a partial clone, if it vaguely represents the variant
+/// typing information of that original thing, without retaining the data.
+///
+/// For example, a partial clone of `Result<String, MyError>` is just `Result<(), ()>`
+pub trait PartialClone {
+    type Partial;
+    fn partial_clone(&self) -> Self::Partial;
+}
+
 /// A strong future is just a RefCell holding the original future. It's only "strong" in the
 /// sense that it can be `downgraded` into a large number of "weak" references.
-/// 
+///
 /// **What is Strong? and what is Weak?**
-/// 
+///
 /// The "strong-weak" naming is really to highlight the ownership coupling between the two.
 /// But a better name for this pair would have been "timing-data":
-/// 
-/// * The [StrongFuture] holds the timing of the original future, and resolves to `Result<(), ()>`
+///
+/// * The [StrongFuture] holds the timing of the original future, and resolves to a "partial
+///  clone" of the original result. (Think `Result<(), ()>` instead of `Result<T, E>`)
 /// * The [WeakFuture] holds a readonly reference to the resulting data of the original future
-/// 
+///
 /// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
 /// the same future across many `futures_lite::future::zip` branches.
-/// 
+///
 /// You can obtain one by calling [upgrade] on any [Future]
-pub struct StrongFuture<T, E, F: Future<Output = Result<T, E>>> {
-    result: RefCell<Option<Result<T, E>>>,
+pub struct StrongFuture<T: PartialClone, F: Future<Output = T>> {
+    result: RefCell<Option<T>>,
     timing: RefCell<F>,
-    _marker: PhantomPinned
+    _marker: PhantomPinned,
 }
 
 /// A weak future is just a borrowed reference to a [StrongFuture]. You can have as
 /// many weak futures as you would like, by calling [downgrade]. However, just like weak `Arc`
-/// pointers, all [WeakFuture] references expire when your [StrongFuture] is dropped. 
-/// 
+/// pointers, all [WeakFuture] references expire when your [StrongFuture] is dropped.
+///
 /// And, there is an additional catch:
 ///
 /// > The result from `weak_future.await` is a [core::cell::Ref] guard. And you **must** drop this guard
 /// > manually before any `await` in your own async code. Otherwise, Rust **will panic**.
-/// 
+///
 /// **What is Strong? and what is Weak?**
-/// 
+///
 /// The "strong-weak" naming is really to highlight the ownership coupling between the two.
 /// But a better name for this pair would have been "timing-data":
-/// 
+///
 /// * The [StrongFuture] holds the timing of the original future, and resolves to `Result<(), ()>`
 /// * The [WeakFuture] holds a readonly reference to the resulting data of the original future
-/// 
+///
 /// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
 /// the same future across many `futures_lite::future::zip` branches.
-/// 
+///
 /// You can obtain one by calling [downgrade] on any [StrongFuture]
-pub struct WeakFuture<'a, T, E> {
-    result: &'a RefCell<Option<Result<T, E>>>,
+pub struct WeakFuture<'a, T: PartialClone> {
+    result: &'a RefCell<Option<T>>,
 }
 
 type AsyncResult<T> = core::result::Result<T, AsyncRuntimeError>;
@@ -328,8 +338,8 @@ impl<'a> Future for AsyncYielderFuture<'a> {
     }
 }
 
-impl<'a, T, E> Future for WeakFuture<'a, T, E> {
-    type Output = Ref<'a, Option<Result<T, E>>>;
+impl<'a, T: PartialClone> Future for WeakFuture<'a, T> {
+    type Output = Ref<'a, Option<T>>;
 
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
         let is_some = { self.result.borrow().is_some() };
@@ -340,38 +350,46 @@ impl<'a, T, E> Future for WeakFuture<'a, T, E> {
     }
 }
 
-impl<T, E, F: Future<Output = Result<T, E>>> Future for StrongFuture<T, E, F> {
-    type Output = Result<(), ()>;
+impl<T: PartialClone, F: Future<Output = T>> Future for StrongFuture<T, F> {
+    type Output = T::Partial;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut future = self.timing.borrow_mut();
         let pinned = unsafe { Pin::new_unchecked(&mut *future) };
         match pinned.poll(cx) {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok(v)) => {
-                self.result.replace(Some(Ok(v)));
-                Poll::Ready(Ok(()))
+            Poll::Ready(v) => {
+                let partial = v.partial_clone();
+                self.result.replace(Some(v));
+                Poll::Ready(partial)
             }
-            Poll::Ready(Err(e)) => {
-                self.result.replace(Some(Err(e)));
-                Poll::Ready(Err(()))
-            }
+        }
+    }
+}
+
+impl<T, E> PartialClone for Result<T, E> {
+    type Partial = Result<(), ()>;
+    fn partial_clone(&self) -> Self::Partial {
+        match self.as_ref() {
+            Ok(_) => Ok(()),
+            Err(_) => Err(()),
         }
     }
 }
 
 /// Upgrades any future to obtain a [StrongFuture]
 ///
-/// Caveat: This strong future returns `Result<(), ()>` instead of the original data. 
+/// Caveat: This strong future returns `Result<(), ()>` instead of the original data.
 /// To obtain access to the data, use a [WeakFuture]
-pub fn upgrade<'a, T, E, F>(future: F) -> StrongFuture<T, E, F>
+pub fn upgrade<'a, T, F>(future: F) -> StrongFuture<T, F>
 where
-    F: Future<Output = Result<T, E>>,
+    T: PartialClone,
+    F: Future<Output = T>,
 {
     StrongFuture {
         result: RefCell::new(None),
         timing: RefCell::new(future),
-        _marker: PhantomPinned::default()
+        _marker: PhantomPinned::default(),
     }
 }
 
@@ -381,9 +399,10 @@ where
 ///
 /// Caveat: The result from `weak_future.await` is a [core::cell::Ref] guard. And you **must** drop this guard
 /// manually before any `await` in your own async code. Otherwise, Rust **will panic**.
-pub fn downgrade<'a, T, E, F>(strong: &'a StrongFuture<T, E, F>) -> WeakFuture<'a, T, E>
+pub fn downgrade<'a, T, F>(strong: &'a StrongFuture<T, F>) -> WeakFuture<'a, T>
 where
-    F: Future<Output = Result<T, E>>,
+    T: PartialClone,
+    F: Future<Output = T>,
 {
     WeakFuture {
         result: &strong.result,
