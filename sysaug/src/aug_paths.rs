@@ -10,19 +10,23 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
-use crate::PermType;
 use crate::common::{PathAction, SysAugError, SyscallInfo};
 use crate::handler_async::{AsyncTraceeHandler, get_mem_helper};
+use crate::{PermType, display_err};
 use pocker_ptrace::{
     GenericPurposeRegs, MemHelpers, read_bytes_to_fixed_sized_objs, read_bytes_to_structs, setregs,
     write_fixed_sized_objs_to_tracee, write_structs_to_tracee,
 };
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use tracing::{Level, event};
 
 /// Per Linux inode.7 documentation, stx_mode needs a mask, if we only want to manipulate chmod
 const FILE_PERMS_MASK: usize = 0o7777;
+
+const EACCES: usize = -libc::EACCES as usize;
+const EEXIST: usize = -libc::EEXIST as usize;
 
 impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceClient> {
     pub async fn augment_sys_paths(
@@ -46,7 +50,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             orig_regs.arg3,
             orig_regs.arg4,
         ];
-        let mut write_args = [
+        let write_args = [
             &mut orig_regs.arg0,
             &mut orig_regs.arg1,
             &mut orig_regs.arg2,
@@ -54,14 +58,16 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             &mut orig_regs.arg4,
         ];
         let mut need_write_regs = false;
+        let mut need_write_paths: usize = 0;
+        let mut need_skip_syscall: Option<usize> = None;
         let mut save_paths: [Option<PathBuf>; 4] = Default::default();
-        for (i, ref_arg_i) in write_args.iter_mut().enumerate() {
+        for i in 0..read_args.len() {
             let check_bit: usize = 1 << i;
             if (check_bit & syscall.path_positions) == 0 {
                 continue;
             }
-            let arg_i = **ref_arg_i;
-            if **ref_arg_i == 0 {
+            let arg_i = read_args[i];
+            if arg_i == 0 {
                 continue;
             }
 
@@ -70,6 +76,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 .unwrap_or("".into());
 
             // Read orig_path from registers
+            // TODO: This can cause buffer overflow if tracee is malicious.
             let path_bytes =
                 ptrace_client.execute(move || (read_bytes_until_zero)(pid, arg_i))??;
             let orig_path_buf = Self::path_from_bytes(path_bytes)?;
@@ -87,8 +94,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                         dirfd_path.join(&new_path_val)
                     };
                     save_paths[i] = Some(input_path);
-                    **ref_arg_i = self.tracee_stack_append_path(new_path_val)?;
-                    need_write_regs = true;
+                    need_write_paths |= check_bit;
                 }
                 PathAction::ELOOP => {
                     self.do_skip_syscall(-libc::ELOOP as usize).await?;
@@ -130,17 +136,31 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             }
         }
 
-        // TODO: Handle creation & deletion of hard links
-        //
-        // There are no symlinks being created in the rootfs. 'ln a b' will create a link in guest OS called "b" that's not visible from host
-        //
-        // Creation of the "b" link will only record the metadata for "b". (Metadata file for "b" exists in host OS)
-        //
-        // Every metadata of a hard link will contain a UUID. And for each uuid, there is /.metadata/hardLinkCounter/uuid json file
-        //   {count: 2, paths: ["/a", "/b"]}
-        //
-        // Upon deletion of /a, we RENAME "a" to "b" based on the path list. If no path is left, we delete it.
+        // Handle reads of hardlinks
+        let maybe_path = save_paths.iter_mut().find_map(|x| x.as_mut());
+        if syscall.should_follow_hardlink
+            && let Some(path) = maybe_path
+        {
+            if let Some(meta) = self.read_metadata_for_file(path)? {
+                if meta.hardlink_counter.is_some() {
+                    // Resolve the actual path of the hardlink
+                    *path = path.canonicalize().map_err(SysAugError::StatHardlinkIO)?;
+                    let i = save_paths.iter().position(|x| x.is_some()).unwrap();
+                    need_write_paths |= 1 << i;
 
+                    // Set dirfd to AT_FDCWD to avoid ELOOP on some Linux
+                    if syscall.dirfd_precedes_path {
+                        *write_args[i - 1] = libc::AT_FDCWD as usize;
+                    }
+
+                    if let Some(j) = syscall.dirfd_position {
+                        *write_args[j as usize] = libc::AT_FDCWD as usize;
+                    }
+                }
+            }
+        }
+
+        // Replace the arguments for chmod and chown, according to Rootfs configs
         if &syscall.sets_file_perms == &Some(PermType::Chown) {
             let position = &syscall
                 .file_perms_position
@@ -160,14 +180,211 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             need_write_regs = true;
         }
 
-        if need_write_regs {
+        // Create hardlinks by (1) moving the original file (2) creating two symlinks (3) skip system call
+        if let Some((i, j)) = syscall.creates_hardlink
+            && let Some(metadir) = self.get_metadata_dir()
+        {
+            let i = i as usize;
+            let j = j as usize;
+            if let Some(path) = save_paths[i].as_ref()
+                && let path = path.canonicalize().map_err(SysAugError::CreateHardlinkIO)?
+                && path.exists()
+                && let Some(result_path) = save_paths[j].as_ref()
+            {
+                let target_path = if path.starts_with(&metadir) {
+                    path.clone()
+                } else {
+                    let links_dir = metadir.join("links");
+                    let uuid = uuid::Uuid::new_v4().to_string();
+                    let new_meta = links_dir.join(format!("{}.json", &uuid));
+                    let target_path = links_dir.join(uuid);
+
+                    // First, move the metadata
+                    std::fs::create_dir_all(&links_dir).map_err(SysAugError::CreateHardlinkIO)?;
+                    if let Some(old_meta) = self.get_metadata_path(&path)? {
+                        let _ = std::fs::rename(&old_meta, &new_meta)
+                            .map_err(SysAugError::CreateHardlinkIO)
+                            .map_err(display_err);
+                    };
+
+                    // Then, move the link content
+                    std::fs::rename(&path, &target_path).map_err(SysAugError::CreateHardlinkIO)?;
+
+                    // Then, setup symlinks
+                    symlink(&target_path, &path).map_err(SysAugError::CreateHardlinkIO)?;
+                    self.increment_hardlink_counter(&path)?;
+                    target_path
+                };
+
+                let rootfs_path = self.consts.args.rootfs.as_ref().unwrap();
+                if !result_path.starts_with(rootfs_path) {
+                    need_skip_syscall.replace(EACCES);
+                } else if result_path.exists() {
+                    need_skip_syscall.replace(EEXIST);
+                } else {
+                    symlink(&target_path, result_path).map_err(SysAugError::CreateHardlinkIO)?;
+                    need_skip_syscall.replace(0);
+                }
+            }
+        }
+
+        // Handle rename when target is a hardlink
+        if let Some((i, j)) = syscall.renames_metadata
+            && let Some(metadir) = self.get_metadata_dir()
+        {
+            let i = i as usize;
+            let j = j as usize;
+            if let Some(path1) = save_paths[i].as_ref()
+                && let Ok(path1) = path1.canonicalize()
+                && path1.exists()
+                && let Some(path2) = save_paths[j].as_ref()
+                && let Ok(path2) = path2.canonicalize()
+                && path2.exists()
+            {
+                let is_hardlink1 = path1.starts_with(&metadir);
+                let is_hardlink2 = path2.starts_with(&metadir);
+                if is_hardlink1 && is_hardlink2 && path1 == path2 {
+                    need_skip_syscall.replace(0);
+                } else if is_hardlink2 {
+                    // Decrease reference counter by 1
+                    self.delete_metadata_for_file(path2.as_path())?;
+                }
+            }
+        }
+
+        // Write new paths and args into register
+        for i in 0..read_args.len() {
+            let check_bit: usize = 1 << i;
+            if (need_write_paths & check_bit) == 0 {
+                continue;
+            }
+            if let Some(path) = save_paths[i].as_ref() {
+                *write_args[i] = self.tracee_stack_append_path(path.clone())?;
+                need_write_regs = true;
+            }
+        }
+        if need_write_regs && need_skip_syscall.is_none() {
             // Update registers, before real syscall
             ptrace_client.execute(move || setregs(pid, orig_regs))??;
         }
 
-        let regs = self.do_resume_syscall().await?;
-        let retval = regs.syscall_retval() as isize;
+        let (regs, retval) = if let Some(retval) = need_skip_syscall {
+            self.do_skip_syscall(retval).await?;
+            (None as Option<GenericPurposeRegs>, retval)
+        } else {
+            let regs = self.do_resume_syscall().await?;
+            let retval = regs.syscall_retval();
+            (Some(regs), retval)
+        };
+        let retval = retval as isize;
 
+        self.on_chmod_chown_syscall_exit(syscall, &read_args, &save_paths)?;
+
+        if retval < 0 {
+            return Ok(());
+        }
+
+        self.on_stat_syscall_exit(syscall, &read_args, &save_paths)
+            .await?;
+        self.on_link_syscall_exit(syscall, &read_args, &save_paths)?;
+        self.on_rename_syscall_exit(syscall, &read_args, &save_paths)?;
+
+        if retval == 0 {
+            return Ok(());
+        }
+
+        if let Some(regs) = regs {
+            match syscall.getdents_bits {
+                Some(32) => {
+                    self.replace_getdents_result::<Dirent>(syscall, regs)
+                        .await?
+                }
+                Some(64) => {
+                    self.replace_getdents_result::<Dirent64>(syscall, regs)
+                        .await?
+                }
+                _ => (),
+            };
+        }
+        Ok(())
+    }
+
+    /// Rename metadata as well.
+    fn on_rename_syscall_exit(
+        &self,
+        syscall: &SyscallInfo,
+        _args: &[usize],
+        save_paths: &[Option<PathBuf>],
+    ) -> Result<(), SysAugError> {
+        // First, check for hardlinks
+        // Reminder: This is different from on_syscall_enter because files changed
+        if let Some((_, j)) = syscall.renames_metadata
+            && let Some(metadir) = self.get_metadata_dir()
+        {
+            let j = j as usize;
+            if let Some(path2) = save_paths[j].as_ref()
+                && let Ok(path2) = path2.canonicalize()
+            {
+                let is_hardlink2 = path2.starts_with(&metadir);
+                if is_hardlink2 {
+                    return Ok(());
+                }
+            }
+        }
+
+        if let Some((i, j)) = syscall.renames_metadata {
+            let i = i as usize;
+            let j = j as usize;
+            let path1 = save_paths[i].as_ref().unwrap().as_path();
+            let path2 = save_paths[j].as_ref().unwrap().as_path();
+            let path1 = self.get_metadata_path(path1)?;
+            let path2 = self.get_metadata_path(path2)?;
+            if let (Some(path1), Some(path2)) = (path1, path2) {
+                std::fs::rename(path1, path2).map_err(SysAugError::RenameMetadata)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// handles both symlinks and hardlinks
+    fn on_link_syscall_exit(
+        &self,
+        syscall: &SyscallInfo,
+        _args: &[usize],
+        save_paths: &[Option<PathBuf>],
+    ) -> Result<(), SysAugError> {
+        if let Some((_, i)) = syscall.creates_symlink {
+            let i = i as usize;
+            if let Some(path) = save_paths[i].as_ref() {
+                self.save_metadata_for_file(path, |x| x.is_symlink = Some(true))?;
+            }
+        }
+        if let Some((_, i)) = syscall.creates_hardlink {
+            let i = i as usize;
+            if let Some(path) = save_paths[i].as_ref() {
+                self.increment_hardlink_counter(path)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn increment_hardlink_counter(&self, path: &PathBuf) -> Result<(), SysAugError> {
+        self.save_metadata_for_file(path, |x| {
+            if let Some(count) = x.hardlink_counter {
+                x.hardlink_counter = Some(count + 1);
+            } else {
+                x.hardlink_counter = Some(1);
+            }
+        })?;
+        Ok(())
+    }
+
+    fn on_chmod_chown_syscall_exit(
+        &self,
+        syscall: &SyscallInfo,
+        read_args: &[usize],
+        save_paths: &[Option<PathBuf>],
+    ) -> Result<(), SysAugError> {
         if let Some(PermType::Chmod) = &syscall.sets_file_perms {
             let position = &syscall
                 .file_perms_position
@@ -223,7 +440,15 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 })?;
             }
         }
+        Ok(())
+    }
 
+    async fn on_stat_syscall_exit(
+        &self,
+        syscall: &SyscallInfo,
+        read_args: &[usize],
+        save_paths: &[Option<PathBuf>],
+    ) -> Result<(), SysAugError> {
         let maybe_stat_path =
             save_paths
                 .iter()
@@ -231,10 +456,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 .ok_or(SysAugError::SyscallMissingField(
                     "stat syscalls don't have a corresponding path/fd to read from",
                 ));
-
-        if retval < 0 {
-            return Ok(());
-        }
 
         if let Some(position) = &syscall.stat_buf_position {
             let path = maybe_stat_path?.as_path();
@@ -266,22 +487,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             self.replace_statbuf_result::<libc::statx>(addr, path)
                 .await?;
         }
-
-        if retval == 0 {
-            return Ok(());
-        }
-
-        match syscall.getdents_bits {
-            Some(32) => {
-                self.replace_getdents_result::<Dirent>(syscall, regs)
-                    .await?
-            }
-            Some(64) => {
-                self.replace_getdents_result::<Dirent64>(syscall, regs)
-                    .await?
-            }
-            _ => (),
-        };
         Ok(())
     }
 
@@ -333,6 +538,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let mut is_delete: Vec<bool> = Vec::new();
         for entry in dirents.iter_mut() {
             event!(Level::TRACE, "Intercepting {:?}", entry);
+            entry.normalize_type();
             let orig_path_buf = Self::path_from_bytes(entry.get_name().to_vec())?;
             let orig_path: &Path = orig_path_buf.as_path();
             let action = self
@@ -397,6 +603,9 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         );
 
         stats.iter_mut().for_each(move |x| {
+            if let Some(count) = &meta.hardlink_counter {
+                x.set_hardlink_counter(*count);
+            }
             if let Some(chmod) = &meta.chmod {
                 let old_mode = x.get_mode();
                 let new_mode = (old_mode & !FILE_PERMS_MASK) | (*chmod & FILE_PERMS_MASK);
@@ -426,6 +635,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
 trait IDirent: pocker_ptrace::CStruct + std::fmt::Debug {
     fn get_name(&mut self) -> &mut [u8];
+    fn normalize_type(&mut self);
 }
 
 #[derive(Debug, Clone)]
@@ -463,9 +673,18 @@ struct DirentHeader {
     pub reclen: libc::c_ushort,
 }
 
+const DT_UNKNOWN: u8 = 0;
+const DT_LNK: u8 = 10;
+
 impl IDirent for Dirent64 {
     fn get_name(&mut self) -> &mut [u8] {
         &mut self.name
+    }
+
+    fn normalize_type(&mut self) {
+        if self.type_ == DT_LNK {
+            self.type_ = DT_UNKNOWN;
+        }
     }
 }
 impl pocker_ptrace::CStruct for Dirent64 {
@@ -485,6 +704,8 @@ impl IDirent for Dirent {
     fn get_name(&mut self) -> &mut [u8] {
         &mut self.name
     }
+
+    fn normalize_type(&mut self) {}
 }
 impl pocker_ptrace::CStruct for Dirent {
     type H = DirentHeader;
@@ -504,6 +725,7 @@ trait IStat: Sized + std::fmt::Debug {
     fn set_mode(&mut self, val: usize);
     fn set_uid(&mut self, val: usize);
     fn set_gid(&mut self, val: usize);
+    fn set_hardlink_counter(&mut self, val: usize);
 }
 
 #[allow(dead_code)]
@@ -538,6 +760,10 @@ impl IStat for libc::stat {
     fn set_uid(&mut self, val: usize) {
         self.st_uid = val as u32;
     }
+
+    fn set_hardlink_counter(&mut self, val: usize) {
+        self.st_nlink = val as libc::nlink_t;
+    }
 }
 
 impl IStat for libc::stat64 {
@@ -555,6 +781,10 @@ impl IStat for libc::stat64 {
 
     fn set_uid(&mut self, val: usize) {
         self.st_uid = val as u32;
+    }
+
+    fn set_hardlink_counter(&mut self, val: usize) {
+        self.st_nlink = val as libc::nlink_t;
     }
 }
 
@@ -574,6 +804,10 @@ impl IStat for libc::statx {
     fn set_uid(&mut self, val: usize) {
         self.stx_uid = val as u32;
     }
+
+    fn set_hardlink_counter(&mut self, val: usize) {
+        self.stx_nlink = val as u32;
+    }
 }
 
 impl IStat for StatLegacy {
@@ -591,5 +825,9 @@ impl IStat for StatLegacy {
 
     fn set_uid(&mut self, val: usize) {
         self.st_uid = val as u16;
+    }
+
+    fn set_hardlink_counter(&mut self, val: usize) {
+        self.st_nlink = val as u16;
     }
 }

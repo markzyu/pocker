@@ -26,7 +26,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     // ------------------------ RootFS Metadata (Perms, etc) -----------------------
     // -----------------------------------------------------------------------------
 
-    fn _get_metadata_path(&self, path: &Path) -> Result<Option<PathBuf>, SysAugError> {
+    pub fn get_metadata_path(&self, path: &Path) -> Result<Option<PathBuf>, SysAugError> {
         if self.consts.args.rootfs.is_none() {
             return Ok(None);
         }
@@ -40,17 +40,18 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(maybe_meta_path)
     }
 
-    pub fn save_metadata_for_file(
+    pub fn save_metadata_for_file<T>(
         &self,
         path: &Path,
-        update_fn: impl FnOnce(&mut RootFsMetadata) -> (),
-    ) -> Result<(), SysAugError> {
+        update_fn: impl FnOnce(&mut RootFsMetadata) -> T,
+    ) -> Result<Option<T>, SysAugError> {
         if self.consts.args.rootfs.is_none() {
-            return Ok(());
+            return Ok(None);
         }
-        if let Some(meta_path) = self._get_metadata_path(path)? {
+        let mut result: Option<T> = None;
+        if let Some(meta_path) = self.get_metadata_path(path)? {
             event!(
-                Level::DEBUG,
+                Level::INFO,
                 "Writing metadata file: {:?}",
                 meta_path.to_string_lossy()
             );
@@ -74,7 +75,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 serde_json::from_reader(&*file).map_err(SysAugError::ParseRootFsMetadata)?
             };
 
-            update_fn(&mut curr_data);
+            result.replace(update_fn(&mut curr_data));
 
             if exists {
                 file.seek(std::io::SeekFrom::Start(0))
@@ -83,7 +84,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             }
             serde_json::to_writer(&*file, &curr_data).map_err(SysAugError::WriteRootFsMetadata2)?;
         }
-        Ok(())
+        Ok(result)
     }
 
     pub fn read_metadata_for_file(
@@ -93,7 +94,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         if self.consts.args.rootfs.is_none() {
             return Ok(None);
         }
-        if let Some(meta_path) = self._get_metadata_path(path)? {
+        if let Some(meta_path) = self.get_metadata_path(path)? {
             event!(
                 Level::DEBUG,
                 "Reading metadata file: {:?}",
@@ -115,7 +116,26 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         if self.consts.args.rootfs.is_none() {
             return Ok(());
         }
-        if let Some(meta_path) = self._get_metadata_path(path)? {
+        if let Some(meta_path) = self.get_metadata_path(path)? {
+            // First, consider hardlink counter
+            let should_keep = self.save_metadata_for_file(path, |x| {
+                if let Some(val) = x.hardlink_counter
+                    && val > 1
+                {
+                    x.hardlink_counter = Some(val - 1);
+                    return true;
+                }
+                false
+            })?;
+            if should_keep == Some(true) {
+                return Ok(());
+            } else if let Ok(path) = path.canonicalize() {
+                // First, delete the file backing the hardlink
+                let _ = std::fs::remove_file(path)
+                    .map_err(SysAugError::DeleteMetadata)
+                    .map_err(display_err);
+            }
+
             event!(
                 Level::TRACE,
                 "Deleting metadata file: {:?}",
@@ -130,7 +150,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         }
 
         if path.is_dir() {
-            if let Some(mut meta_path) = self._get_metadata_path(path)? {
+            if let Some(mut meta_path) = self.get_metadata_path(path)? {
                 meta_path.pop();
                 let _ = std::fs::remove_dir_all(meta_path);
             }
@@ -138,37 +158,71 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(())
     }
 
-    fn __resolve_metadata_path(&self, path: &Path) -> Result<Option<PathBuf>, SysAugError> {
+    pub fn get_metadata_dir(&self) -> Option<PathBuf> {
         let args = &self.consts.args;
         let Some(rootfs) = args.rootfs.as_ref() else {
-            return Ok(None);
+            return None;
         };
         if rootfs == Path::new("/") {
             // If setting real root as chroot/rootfs, don't create metadata
-            return Ok(None);
+            return None;
         }
+
+        // This unwrap() works on the assumption that args.rootfs is a canonicalized path
+        let mut metaname = rootfs.file_name().unwrap().to_os_string();
+        metaname.push(".metadata");
+        let metadir = rootfs.with_file_name(metaname);
+        Some(metadir)
+    }
+
+    fn __resolve_metadata_path(&self, path: &Path) -> Result<Option<PathBuf>, SysAugError> {
+        let Some(mut metadir) = self.get_metadata_dir() else {
+            return Ok(None);
+        };
+
         if !path.exists() {
             return Ok(None);
         }
-        let canonical_path = path.canonicalize();
-        if canonical_path.is_err() {
-            return Ok(None);
-        }
-        let canonical_path_unwrap = canonical_path.unwrap();
 
-        let mut metaname = rootfs.file_name().unwrap().to_os_string();
-        metaname.push(".metadata");
-        let mut metadir = rootfs.with_file_name(metaname);
+        // Note: canonicalize() will also resolve ALL symlinks
+        let Ok(canonical_path) = path.canonicalize() else {
+            return Ok(None);
+        };
+
+        // Case 1: The file might be a hardlink, whose target is stored within the metadata dir
+        if canonical_path.strip_prefix(&metadir).is_ok() {
+            // Check whether this is a hardlink or a symlink to a hardlink
+            let cloned_path = path.to_owned();
+            let resolve_one_link = self._read_symlink(&cloned_path)?;
+            let is_simple_hardlink = resolve_one_link.as_ref() == Some(&canonical_path)
+                || &cloned_path == &canonical_path;
+            if is_simple_hardlink {
+                let Some(basename) = canonical_path.file_name() else {
+                    return Ok(None);
+                };
+
+                let mut basename = basename.to_os_string();
+                basename.push(".json");
+                return Ok(Some(canonical_path.with_file_name(&basename)));
+            } else {
+                event!(
+                    Level::DEBUG,
+                    "Hardlink corner case, file {:?}, backing {:?}",
+                    path,
+                    &canonical_path
+                );
+            }
+        }
+
+        // Case 2: The file is stored in the rootfs dir
         metadir.push("rootfs");
-
-        let relative_path = canonical_path_unwrap.strip_prefix(rootfs);
-        if relative_path.is_err() {
+        let rootfs = self.consts.args.rootfs.as_ref().unwrap();
+        let Ok(relative_path) = canonical_path.strip_prefix(rootfs) else {
             return Ok(None);
-        }
-        let relative_path_unwrap = relative_path.unwrap();
+        };
 
         metadir.push("chld");
-        for component in relative_path_unwrap.components() {
+        for component in relative_path.components() {
             if component == Component::CurDir {
                 continue;
             }
@@ -218,7 +272,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         mut visited: HashSet<PathBuf>,
         args: &[usize],
     ) -> Result<PathAction, SysAugError> {
-        event!(Level::DEBUG, "Following symlink {:?}", orig_path);
         visited.insert(orig_path.into());
         let action = self.calc_real_path_simple(orig_path, syscall).await?;
         if let PathAction::Override(real_path) = &action {
@@ -289,7 +342,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         } else if let (Some(flag), Some(flag_reg)) =
             (syscall.flag_dont_follow_symlink, syscall.flags)
         {
-            if args[flag_reg] | flag != 0 {
+            if (args[flag_reg] & flag) != 0 {
                 return Ok(Err(false));
             }
         }
@@ -304,12 +357,11 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             }
         }
 
-        if let Ok(metadata) = std::fs::symlink_metadata(real_path) {
-            if !metadata.file_type().is_symlink() {
-                return Ok(Err(false));
-            }
-            let link = real_path.read_link().map_err(SysAugError::ReadSymlink)?;
-            if link.is_relative() {
+        if let Some(link) = self._read_symlink(real_path)? {
+            if let Some(metadir) = self.get_metadata_dir()
+                && let Ok(link) = link.canonicalize()
+                && link.starts_with(&metadir)
+            {
                 return Ok(Err(false));
             }
             if visited.contains(&link) {
@@ -320,6 +372,20 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(Err(false))
     }
 
+    fn _read_symlink(&self, path: &PathBuf) -> Result<Option<PathBuf>, SysAugError> {
+        if let Ok(metadata) = std::fs::symlink_metadata(path) {
+            if !metadata.file_type().is_symlink() {
+                return Ok(None);
+            }
+            let link = path.read_link().map_err(SysAugError::ReadSymlink)?;
+            if link.is_relative() {
+                return Ok(None);
+            }
+            return Ok(Some(link));
+        }
+        Ok(None)
+    }
+
     // Same as calc_real_path_recurse
     pub async fn calc_real_path(
         &self,
@@ -327,8 +393,16 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         syscall: &SyscallInfo,
         args: &[usize],
     ) -> Result<PathAction, SysAugError> {
-        self.calc_real_path_recurse(orig_path, syscall, HashSet::new(), args)
-            .await
+        let result = self
+            .calc_real_path_recurse(orig_path, syscall, HashSet::new(), args)
+            .await?;
+        event!(
+            Level::DEBUG,
+            "Following symlink {:?} -> {:?}",
+            orig_path,
+            &result
+        );
+        Ok(result)
     }
 
     // There are SysAugConfig configurations that can "modify" a guest/host path. This function applies them.

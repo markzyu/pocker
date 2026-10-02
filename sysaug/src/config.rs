@@ -216,16 +216,46 @@ impl Default for PermsConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct MountConfig {
+    /// A path on the host OS
+    #[serde(default)]
+    pub(crate) source: String,
+
+    /// A path on the guest OS
+    #[serde(default)]
+    pub(crate) target: String,
+
+    /// Note: We only support "overlay" for now
+    #[serde(default)]
+    pub(crate) fstype: String,
+}
+
+impl Default for MountConfig {
+    fn default() -> Self {
+        Self {
+            source: String::new(),
+            target: String::new(),
+            fstype: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SysAugConfig {
     #[serde(default)]
     pub(crate) rootfs: RootfsConfig,
     #[serde(default)]
     pub(crate) perms: PermsConfig,
+
+    /// The last layer is the "topmost" mount
+    #[serde(default)]
+    pub(crate) mounts: Vec<MountConfig>,
 }
 
 impl Default for SysAugConfig {
     fn default() -> Self {
         Self {
+            mounts: Vec::default(),
             rootfs: RootfsConfig::default(),
             perms: PermsConfig::default(),
         }

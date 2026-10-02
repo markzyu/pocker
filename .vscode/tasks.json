@@ -4,7 +4,7 @@
     {
       "label": "Cargo Check (Target Arch)",
       "type": "shell",
-      "command": "cargo check --target ${input:targetArch}",
+      "command": "cargo check --target ${input:targetArch} -p krsm -p pocker-executor -p pocker-procfs -p pocker-ptrace -p pocker-sysaug",
       "problemMatcher": "$rustc",
       "group": {
         "kind": "build",

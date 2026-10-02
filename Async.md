@@ -98,8 +98,8 @@ fn on_tracee_init_syscalls(&self, s: &WaitStatus, exit: &mut Option<u8>) -> Bool
     }
     if ptrace::is_syscall_stop(s) {
         let mut regs = self.ptrace_client.execute(move || ptrace::getregs(pid))??;
-        let syscall_info = SYSCALL_INFOS.get(&regs.syscall_num);
-        if regs.syscall_num == NO_MOD_SYSCALL {
+        let syscall_info = SYSCALL_INFOS.get(&regs.syscall_num());
+        if regs.syscall_num() == NO_MOD_SYSCALL {
             // If we are trying to skip a syscall, allow that to go through
             return Ok(true);
         }
@@ -138,7 +138,7 @@ fn on_tracee_init_syscalls(&self, s: &WaitStatus, exit: &mut Option<u8>) -> Bool
             TraceeInitStage::FirstCallReplacedWithMmap => {
                 let orig_regs = rwoption_take(&self.orig_request_regs)?
                     .ok_or(SysAugError::InitMissingSavedRegs)?;
-                let orig_syscall_num = orig_regs.syscall_num;
+                let orig_syscall_num = orig_regs.syscall_num();
                 let mut tracee_addr = rwlock_write(&self.mmap_tracee_addr)?;
                 *tracee_addr = regs.syscall_retval();
 
@@ -324,7 +324,7 @@ async fn _insert_syscall(
     event!(
         Level::DEBUG,
         "TraceeInit: Continuing syscall {} from {:x}",
-        new_regs.syscall_num,
+        new_regs.syscall_num(),
         new_regs.pc
     );
     self.ptrace_client

@@ -1,11 +1,19 @@
 [package]
 name = "pocker"
 description = "A multithreaded incomplete rewrite of proot, from scratch, just for fun. (The p stands for ptrace)"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Zhongzhi Yu <7296488+markzyu@users.noreply.github.com>"]
 repository = "https://github.com/markzyu/pocker"
 license = "GPL-3.0-or-later"
 edition = "2024"
+
+[[bin]]
+name = "pocker"
+path = "src/pocker.rs"
+
+[[bin]]
+name = "pocker-runtime"
+path = "src/runtime.rs"
 
 [lints]
 workspace = true
@@ -13,12 +21,22 @@ workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-pocker-executor = {path = "../executor", version = "0.2"}
-pocker-procfs = {path = "../procfs", version = "0.2"}
-pocker-ptrace = {path = "../ptrace", version = "0.2"}
-pocker-sysaug = {path = "../sysaug", version = "0.2"}
+pocker-executor = {path = "../executor", version = "0.3"}
+pocker-procfs = {path = "../procfs", version = "0.3"}
+pocker-ptrace = {path = "../ptrace", version = "0.3"}
+pocker-sysaug = {path = "../sysaug", version = "0.3"}
+
+anyhow = "1.0.104"
+bytes = "1.12"
 clap = { version = "4", features = ["derive"] }
+flate2 = "1.1"
+oci-client = { version = "0.18.0", default-features = false, features = ["rustls-tls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+tar = "0.4"
 thiserror = "1.0.25"
+tokio = { version = "1.53.1", default-features = false, features = ["rt"] }
 tracing = "0.1.26"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3.6", features = ["env-filter"] } 
+webpki-root-certs = "1.0"
+oci-spec = "0.10.0"

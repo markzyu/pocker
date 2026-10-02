@@ -157,6 +157,15 @@ pub enum SysAugError {
 
     #[error("Internal error: bad syscall config: {0}")]
     SyscallMissingField(&'static str),
+
+    #[error("Failed to create hardlink: {0}")]
+    CreateHardlinkIO(std::io::Error),
+
+    #[error("Failed to move metadata: {0}")]
+    RenameMetadata(std::io::Error),
+
+    #[error("Failed to stat the backing file of a hardlink: {0}")]
+    StatHardlinkIO(std::io::Error),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -167,6 +176,7 @@ pub struct SysAugArgs {
     pub fail_fast: bool,
     pub fix_sigsys: bool,
     pub fix_mmap: bool,
+    pub no_seccomp: bool,
     pub gdb: bool,
     pub gdb_at: Option<u64>,
 
@@ -215,6 +225,13 @@ pub struct RootFsMetadata {
     pub chmod: Option<usize>,
     pub chown_owner: Option<usize>,
     pub chown_group: Option<usize>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_symlink: Option<bool>,
+
+    /// This is set if and only if the file is a hard link
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hardlink_counter: Option<usize>,
 }
 
 // ------------------- SYSCALLS -------------------
@@ -265,6 +282,33 @@ pub struct SyscallInfo {
     pub dont_follow_symlink: bool,
     pub flag_dont_follow_symlink: Option<usize>,
 
+    /// The register storing the location of the link target and link name
+    pub creates_symlink: Option<(u8, u8)>,
+
+    /// A note on hardlinks:
+    ///
+    /// Hardlinks are stored in the metadata folder, and the links themselves
+    /// are just symlinks to that content.
+    ///
+    /// Most system calls should never "follow hardlink". (the syscall args shouldn't)
+    ///
+    /// > If someone `rename(link_a, b)`,
+    /// > It shouldn't send a system call to rename the `.metadata/links/id` to `b`.
+    /// > But it should rename the `link_a` (symlink).
+    ///
+    /// One exception is basic readonly calls like `stat`, `access`, `open`...
+    /// For these calls, we should be showing the status of the content file. And
+    /// we identify these calls with `should_follow_hardlink`
+    ///
+    /// Another is metadata. All links share permission. So they share metadata at
+    /// `.metadata/links/id.json`. However, we need to handle `unlink()` differently,
+    /// which must check `RootfsMetadata::hardlink_counter` before removing metadata.
+    pub creates_hardlink: Option<(u8, u8)>,
+    pub should_follow_hardlink: bool,
+
+    /// This indicates a aug_paths syscall. register ids are stored as (from, to)
+    pub renames_metadata: Option<(u8, u8)>,
+
     /// true -> setuid/setgid, false -> getuid/getgid
     pub is_setter: bool,
     /// a bitmask of Real/Effective/SavedSet/FileSystem/IsUid flags (from 0 to 31). One call can set multiple flags at once.
@@ -297,6 +341,10 @@ pub const fn default_syscall_info() -> SyscallInfo {
         deletion_type: None,
         dont_follow_symlink: false,
         flag_dont_follow_symlink: None,
+        creates_symlink: None,
+        creates_hardlink: None,
+        should_follow_hardlink: false,
+        renames_metadata: None,
         is_setter: false,
         res_bits: 0,
         resf_bit: None,

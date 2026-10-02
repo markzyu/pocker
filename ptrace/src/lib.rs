@@ -30,8 +30,7 @@ use nix::sys::mman;
 use nix::sys::wait;
 use nix::unistd;
 use std::convert::TryInto;
-use std::os::fd::AsRawFd;
-use std::os::fd::{OwnedFd, RawFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt;
 use std::process;
 use tracing::{Level, event};
@@ -64,12 +63,9 @@ pub struct PtraceSyscallInfo {
     _reserved2: [u64; 3],
 }
 
-/// Assumption: This assumes the entire tracer program calls `start` only once
+/// Assumption: This function should only be called once.
 ///             So that it can safely initialize global, shared, mmap regions
-pub fn start(
-    cmd: &mut process::Command,
-    no_attach: bool,
-) -> Result<(unistd::Pid, RawFd, usize), PtraceError> {
+pub fn setup_shared_memory() -> Result<(OwnedFd, usize), PtraceError> {
     // Note: All FDs will auto close when dropped.
 
     // Open many empty FDs to at least make sure we get a high number as FD,
@@ -118,10 +114,13 @@ pub fn start(
         shared_fd,
         mmap_addr
     );
+
+    Ok((shared_fd, mmap_addr))
+}
+
+pub fn start(cmd: &mut process::Command, no_attach: bool) -> Result<unistd::Pid, PtraceError> {
     match unsafe { unistd::fork() } {
-        Ok(unistd::ForkResult::Parent { child, .. }) => {
-            Ok((child, shared_fd.as_raw_fd(), mmap_addr))
-        }
+        Ok(unistd::ForkResult::Parent { child, .. }) => Ok(child),
         Ok(unistd::ForkResult::Child) => {
             if no_attach {
                 // Use PTRACE_TRACEME, and wait for tracer's main thread
@@ -182,18 +181,18 @@ pub fn set_syscall_num(pid: nix::unistd::Pid, val: usize) -> Result<(), PtraceEr
     event!(
         Level::DEBUG,
         "Replacing syscall {} with {}",
-        regs.syscall_num,
+        regs.syscall_num(),
         val,
     );
 
-    regs.syscall_num = val;
+    regs.set_next_syscall(val);
     setregs(pid, regs)?;
 
     let regs2 = getregs(pid)?;
     event!(
         Level::TRACE,
         "Confirm regs: syscall {} with {:x} {:x} {:x}",
-        regs2.syscall_num,
+        regs2.next_syscall(),
         regs2.arg0,
         regs2.arg1,
         regs2.arg2,
@@ -242,8 +241,7 @@ mod tests {
 
     fn _start_cmd() -> unistd::Pid {
         let mut cmd = std::process::Command::new("ls");
-        let (pid, ..) = crate::start(&mut cmd, false).unwrap();
-        pid
+        crate::start(&mut cmd, false).unwrap()
     }
 
     #[test]
