@@ -8,6 +8,7 @@ mod tasks;
 
 pub use crate::common::{AsyncRuntimeError, FixedSizedMap};
 pub use crate::futures::{
-    AsyncRuntime, AsyncYielder, StrongFuture, StrongWeakBuilder, WeakFuture, downgrade, upgrade,
+    AsyncRuntime, AsyncYielder, StrongFuture, StrongWeakBuilder, WeakFuture, WeakFutureGuard,
+    downgrade, upgrade,
 };
 pub use crate::tasks::{TaskBatch, TaskTracker};

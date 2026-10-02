@@ -3,6 +3,7 @@ use crate::common::{AsyncRuntimeError, FixedSizedMap};
 use core::cell::{Ref, RefCell};
 use core::future::Future;
 use core::marker::PhantomPinned;
+use core::ops::Deref;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
@@ -95,6 +96,8 @@ pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
 
 /// This is a Future that drives the completion of both the original future, and any related
 /// [WeakFuture] instances
+///
+/// You can obtain one by calling [upgrade] on any [Future], and then calling [StrongWeakBuilder::build]
 pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
     result: &'a RefCell<Option<T>>,
     timing: &'a RefCell<F>,
@@ -109,8 +112,8 @@ pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
 ///
 /// But there is a catch:
 ///
-/// > The result from `weak_future.await` is a [core::cell::Ref] guard. And you **must** drop this guard
-/// > manually before any `await` in your own async code. Otherwise, Rust **will panic**.
+/// > The result from `weak_future.await` is a [WeakFutureGuard]. And you **must** drop this guard
+/// > manually before any other `await` in your own async code. Otherwise, Rust **will panic**.
 ///
 /// **What is Strong? and what is Weak?**
 ///
@@ -126,6 +129,14 @@ pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
 /// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`
 pub struct WeakFuture<'a, T> {
     result: &'a RefCell<Option<T>>,
+}
+
+/// This is an RAII guard to help you access the result from `.await` of a [WeakFuture]
+///
+/// You **must** drop this guard manually before any other `await` in your own async code.
+/// Otherwise, Rust **will panic**.
+pub struct WeakFutureGuard<'a, T> {
+    guard: Ref<'a, Option<T>>,
 }
 
 type AsyncResult<T> = core::result::Result<T, AsyncRuntimeError>;
@@ -340,14 +351,24 @@ impl<'a> Future for AsyncYielderFuture<'a> {
 }
 
 impl<'a, T> Future for WeakFuture<'a, T> {
-    type Output = Ref<'a, Option<T>>;
+    type Output = WeakFutureGuard<'a, T>;
 
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
         let is_some = { self.result.borrow().is_some() };
         match is_some {
-            true => Poll::Ready(self.result.borrow()),
+            true => Poll::Ready(WeakFutureGuard {
+                guard: self.result.borrow(),
+            }),
             false => Poll::Pending,
         }
+    }
+}
+
+impl<'a, T> Deref for WeakFutureGuard<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.guard.as_ref().unwrap()
     }
 }
 
@@ -403,8 +424,8 @@ where
 ///
 /// This reference serves as a new Future that can be awaited on.
 ///
-/// Caveat: The result from `weak_future.await` is a [core::cell::Ref] guard. And you **must** drop this guard
-/// manually before any `await` in your own async code. Otherwise, Rust **will panic**.
+/// Caveat: The result from `weak_future.await` is a [WeakFutureGuard]. And you **must** drop this guard
+/// manually before any other `await` in your own async code. Otherwise, Rust **will panic**.
 pub fn downgrade<'a, T, F>(strong: &'a StrongWeakBuilder<T, F>) -> WeakFuture<'a, T>
 where
     F: Future<Output = T>,
@@ -659,14 +680,14 @@ mod tests {
             let weak_wrapper = futures_lite::future::zip(
                 async {
                     let guard1 = futures::downgrade(&strong_future).await;
-                    match guard1.as_ref().unwrap().as_ref() {
+                    match guard1.as_ref() {
                         Ok(val1) => Ok::<i32, AsyncRuntimeError>(val1 * 5),
                         Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
                     }
                 },
                 async {
                     let guard2 = futures::downgrade(&strong_future).await;
-                    match guard2.as_ref().unwrap().as_ref() {
+                    match guard2.as_ref() {
                         Ok(val2) => Ok::<i32, AsyncRuntimeError>(val2 * 6),
                         Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
                     }
