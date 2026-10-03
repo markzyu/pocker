@@ -6,7 +6,7 @@ My goal is to run OCI containers on modern Android devices, without rooting the 
 
 **You should just use PRoot instead**. It has a history of proven stability and success.
 
-My project is still in its early stage. It barely works right now. Basic shell commands work but `apt-get` is broken.
+My project is still in its early stage. It barely works right now. Basic shell commands work but package managers are broken.
 
 ```bash
 LD_PRELOAD="" cargo run --bin pocker -- run alpine
