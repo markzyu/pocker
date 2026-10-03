@@ -21,6 +21,7 @@ use std::cell::RefCell;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
+use std::pin::{Pin, pin};
 use tracing::{Level, event};
 
 /// Per Linux inode.7 documentation, stx_mode needs a mask, if we only want to manipulate chmod
@@ -414,23 +415,27 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             }
         };
         let future_builder = krsm::upgrade(syscall_future);
+        let mut builder_pinned = pin!(future_builder);
 
-        let weak_future = futures_lite::future::zip(
-            futures_lite::future::zip(
-                self.augment_chmod(&future_builder, syscall, &state),
-                self.augment_chmod_on_creation(&future_builder, syscall, &state),
-            ),
-            self.augment_chown(&future_builder, syscall, &state),
-        );
-        let (((r0, r1), r2), _) =
-            futures_lite::future::zip(weak_future, future_builder.build()).await;
-        for result in [r0, r1, r2] {
-            if let Err(Some(e)) = result {
-                return Err(e);
+        // Creating a RAII scope to make sure we can later do: strong_pinner.as_mut()
+        {
+            let weak_future = futures_lite::future::zip(
+                futures_lite::future::zip(
+                    self.augment_chmod(builder_pinned.as_ref(), syscall, &state),
+                    self.augment_chmod_on_creation(builder_pinned.as_ref(), syscall, &state),
+                ),
+                self.augment_chown(builder_pinned.as_ref(), syscall, &state),
+            );
+            let (((r0, r1), r2), _) =
+                futures_lite::future::zip(weak_future, builder_pinned.as_ref().build()).await;
+            for result in [r0, r1, r2] {
+                if let Err(Some(e)) = result {
+                    return Err(e);
+                }
             }
         }
 
-        let (regs, retval) = future_builder.take_result()?;
+        let (regs, retval) = builder_pinned.as_mut().take_result()?;
         if retval < 0 {
             return Ok(());
         }
@@ -534,7 +539,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
     async fn augment_chown<F: Future<Output = StrongWeakOutput>>(
         &self,
-        future_builder: &StrongWeakBuilder<F>,
+        future_builder: Pin<&StrongWeakBuilder<F>>,
         syscall: &SyscallInfo,
         state: &AugmentState,
     ) -> Result<(), Option<SysAugError>> {
@@ -552,7 +557,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         state.write_arg(*position as usize + 1, self.consts.config.rootfs.host_gid);
 
         // Resume system call, and drop the WeakFutureGuard
-        let _ = krsm::downgrade(&future_builder).await;
+        let _ = krsm::downgrade(future_builder).await;
 
         // After system call
         let new_owner = state.orig_args[*position as usize];
@@ -576,7 +581,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
     async fn augment_chmod<F: Future<Output = StrongWeakOutput>>(
         &self,
-        future_builder: &StrongWeakBuilder<F>,
+        future_builder: Pin<&StrongWeakBuilder<F>>,
         syscall: &SyscallInfo,
         state: &AugmentState,
     ) -> Result<(), Option<SysAugError>> {
@@ -596,7 +601,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         );
 
         // Resume system call, and drop the WeakFutureGuard
-        let _ = krsm::downgrade(&future_builder).await;
+        let _ = krsm::downgrade(future_builder).await;
 
         // After system call
         let new_mod = state.orig_args[*position as usize];
@@ -610,7 +615,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
     async fn augment_chmod_on_creation<F: Future<Output = StrongWeakOutput>>(
         &self,
-        future_builder: &StrongWeakBuilder<F>,
+        future_builder: Pin<&StrongWeakBuilder<F>>,
         syscall: &SyscallInfo,
         state: &AugmentState,
     ) -> Result<(), Option<SysAugError>> {
@@ -634,7 +639,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         );
 
         // Resume system call, and drop the WeakFutureGuard
-        let _ = krsm::downgrade(&future_builder).await;
+        let _ = krsm::downgrade(future_builder).await;
 
         // After system call
         let flags = state.orig_args[*flags_position];
