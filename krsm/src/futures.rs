@@ -3,7 +3,7 @@ use core::cell::{Ref, RefCell};
 use core::future::Future;
 use core::marker::PhantomPinned;
 use core::ops::Deref;
-use core::pin::Pin;
+use core::pin::{Pin, pin};
 use core::task::{Context, Poll};
 
 /// AsyncYielder is a helper for concurrent loops in async.
@@ -60,8 +60,10 @@ pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
 pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
     result: &'a RefCell<Option<T>>,
     timing: &'a RefCell<F>,
+    should_poll_timing: RefCell<bool>,
     /// Strong yields to Weak at the beginning to give weak a chance to initialize
-    yield_ticket: RefCell<AsyncYielderFuture<'a>>,
+    yielder: &'a AsyncYielder,
+    should_yield: RefCell<bool>,
     weak_wrapper: RefCell<F2>,
 }
 
@@ -106,16 +108,12 @@ pub struct WeakFutureGuard<'a, T> {
 impl AsyncYielder {
     /// In the example from above, `loop1` calls this function yield to `loop2`
     pub async fn yield_now(&self) {
-        let future = self.create_yield_ticket();
-        future.await;
-    }
-
-    fn create_yield_ticket(&self) -> AsyncYielderFuture<'_> {
         let orig_poll_number = { *self.num_polls.borrow() };
-        AsyncYielderFuture {
+        let future = AsyncYielderFuture {
             async_yielder: self,
             orig_poll_number,
-        }
+        };
+        future.await;
     }
 
     /// In the example from above, as soon as `loop2` gets to execute and finishes its turn,
@@ -173,24 +171,29 @@ where
     type Output = F2::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut future1 = self.yield_ticket.borrow_mut();
-        let pinned1 = unsafe { Pin::new_unchecked(&mut *future1) };
-        let Poll::Ready(_) = pinned1.poll(cx) else {
-            return Poll::Pending;
-        };
-
-        let mut future2 = self.timing.borrow_mut();
-        let pinned2 = unsafe { Pin::new_unchecked(&mut *future2) };
-        match pinned2.poll(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(v) => {
-                self.result.replace(Some(v));
-
-                let mut future3 = self.weak_wrapper.borrow_mut();
-                let pinned3 = unsafe { Pin::new_unchecked(&mut *future3) };
-                pinned3.poll(cx)
-            }
+        let should_yield = self.should_yield.replace(false);
+        if should_yield {
+            let future1 = self.yielder.yield_now();
+            let pinned1 = pin!(future1);
+            let Poll::Ready(_) = pinned1.poll(cx) else {
+                return Poll::Pending;
+            };
         }
+
+        let should_poll_timing = { *self.should_poll_timing.borrow() };
+        if should_poll_timing {
+            let mut future2 = self.timing.borrow_mut();
+            let pinned2 = unsafe { Pin::new_unchecked(&mut *future2) };
+            let Poll::Ready(v) = pinned2.poll(cx) else {
+                return Poll::Pending;
+            };
+            self.result.replace(Some(v));
+            self.should_poll_timing.replace(false);
+        }
+
+        let mut future3 = self.weak_wrapper.borrow_mut();
+        let pinned3 = unsafe { Pin::new_unchecked(&mut *future3) };
+        pinned3.poll(cx)
     }
 }
 
@@ -249,7 +252,9 @@ impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
     {
         StrongFuture {
             weak_wrapper: RefCell::new(weak_wrapper),
-            yield_ticket: RefCell::new(self.yielder.create_yield_ticket()),
+            should_yield: RefCell::new(true),
+            should_poll_timing: RefCell::new(true),
+            yielder: &self.yielder,
             result: &self.result,
             timing: &self.timing,
         }
@@ -325,6 +330,12 @@ mod tests {
             let (result1, result2) = strong_future.build(weak_wrapper).await;
             Ok::<i32, AsyncRuntimeError>(result1? + result2?)
         });
+
+        // The first poll is wasted on AsyncYielder
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
+        assert!(!runtime._has_new_blockage());
+
+        // The second poll is waiting on PtraceFutureTypes::WaitForSignal
         assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(runtime._has_new_blockage());
         assert_eq!(runtime._pending_futures_size(), 1);
@@ -365,6 +376,11 @@ mod tests {
             let result = strong_future.build(weak_wrapper).await;
             Ok::<i32, AsyncRuntimeError>(result?)
         });
+        // The first poll is wasted on AsyncYielder
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
+        assert!(!runtime._has_new_blockage());
+
+        // The second poll is waiting on PtraceFutureTypes::WaitForSignal
         assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(runtime._has_new_blockage());
         assert_eq!(runtime._pending_futures_size(), 1);
