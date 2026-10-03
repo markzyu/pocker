@@ -3,7 +3,7 @@ use core::cell::{Ref, RefCell};
 use core::future::Future;
 use core::marker::PhantomPinned;
 use core::ops::Deref;
-use core::pin::{Pin, pin};
+use core::pin::Pin;
 use core::task::{Context, Poll};
 
 /// AsyncYielder is a helper for concurrent loops in async.
@@ -199,12 +199,12 @@ where
 ///
 /// Caveat: The result from `weak_future.await` is a [WeakFutureGuard]. And you **must** drop this guard
 /// manually before any other `await` in your own async code. Otherwise, Rust **will panic**.
-pub fn downgrade<'a, T, F>(strong: &'a StrongWeakBuilder<T, F>) -> WeakFuture<'a, T>
+pub fn downgrade<'a, T, F>(strong: Pin<&'a StrongWeakBuilder<T, F>>) -> WeakFuture<'a, T>
 where
     F: Future<Output = T>,
 {
     WeakFuture {
-        result: &strong.result,
+        result: &strong.get_ref().result,
     }
 }
 
@@ -214,13 +214,13 @@ impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
     ///
     /// This function will build a [StrongFuture] which runs the resulting `weak_wrapper` future,
     /// as well as the original future that was consumed by [upgrade].
-    pub fn build(&self) -> StrongFuture<'_, T, F>
+    pub fn build<'a>(self: Pin<&'a Self>) -> StrongFuture<'a, T, F>
     where
         F: Future<Output = T>,
     {
         StrongFuture {
-            result: &self.result,
-            timing: &self.timing,
+            result: &self.get_ref().result,
+            timing: &self.get_ref().timing,
         }
     }
 
@@ -230,7 +230,7 @@ impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
     /// completes.
     ///
     /// If the future is not complete, this method **will panic**.
-    pub fn take_result(&self) -> T {
+    pub fn take_result(self: Pin<&mut Self>) -> T {
         let mut guard = self.result.borrow_mut();
         guard.take().expect(
             "StrongFuture should have completed before calling StrongWeakBuilder::take_result",
@@ -268,48 +268,57 @@ mod tests {
     #[test]
     fn test_strong_weak_futures_can_be_used_to_blend_logics() {
         let runtime = PtraceAsyncRuntime::new();
-        let strong_future = futures::upgrade(async {
+        let strong_builder = futures::upgrade(async {
             runtime
                 .new_pending_future(PtraceFutureTypes::WaitForSignal)
                 .await?;
             Ok::<i32, AsyncRuntimeError>(100)
         });
-        let mut test_future = pin!(async {
-            let weak_wrapper = futures_lite::future::zip(
-                async {
-                    let guard1 = futures::downgrade(&strong_future).await;
-                    match guard1.as_ref() {
-                        Ok(val1) => Ok::<i32, AsyncRuntimeError>(val1 * 5),
-                        Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
-                    }
-                },
-                async {
-                    let guard2 = futures::downgrade(&strong_future).await;
-                    match guard2.as_ref() {
-                        Ok(val2) => Ok::<i32, AsyncRuntimeError>(val2 * 6),
-                        Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
-                    }
-                },
+        let mut strong_pinned = pin!(strong_builder);
+
+        // Creating a RAII scope to make sure we can later do: strong_pinner.as_mut()
+        {
+            let mut test_future = pin!(async {
+                let weak_wrapper = futures_lite::future::zip(
+                    async {
+                        let guard1 = futures::downgrade(strong_pinned.as_ref()).await;
+                        match guard1.as_ref() {
+                            Ok(val1) => Ok::<i32, AsyncRuntimeError>(val1 * 5),
+                            Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
+                        }
+                    },
+                    async {
+                        let guard2 = futures::downgrade(strong_pinned.as_ref()).await;
+                        match guard2.as_ref() {
+                            Ok(val2) => Ok::<i32, AsyncRuntimeError>(val2 * 6),
+                            Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
+                        }
+                    },
+                );
+                let (_, (result1, result2)) =
+                    futures_lite::future::zip(strong_pinned.as_ref().build(), weak_wrapper).await;
+                Ok::<i32, AsyncRuntimeError>(result1? + result2?)
+            });
+
+            assert_eq!(runtime.run_async_step(&mut test_future), None);
+            assert!(runtime._has_new_blockage());
+            assert_eq!(runtime._pending_futures_size(), 1);
+            _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
+
+            // Unblock the future
+            let event = PtraceStatus {};
+            runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event.clone());
+            let output = runtime.run_async_step(&mut test_future);
+
+            assert_eq!(runtime._pending_futures_size(), 0);
+            assert_eq!(
+                strong_pinned.as_ref().result.borrow().clone(),
+                Some(Ok(100))
             );
-            let (_, (result1, result2)) =
-                futures_lite::future::zip(strong_future.build(), weak_wrapper).await;
-            Ok::<i32, AsyncRuntimeError>(result1? + result2?)
-        });
+            assert_eq!(output, Some(Ok(1100)));
+        }
 
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(runtime._has_new_blockage());
-        assert_eq!(runtime._pending_futures_size(), 1);
-        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
-
-        // Unblock the future
-        let event = PtraceStatus {};
-        runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event.clone());
-        let output = runtime.run_async_step(&mut test_future);
-
-        assert_eq!(runtime._pending_futures_size(), 0);
-        assert_eq!(strong_future.result.borrow().clone(), Some(Ok(100)));
-        assert_eq!(output, Some(Ok(1100)));
-        assert_eq!(strong_future.take_result(), Ok(100));
+        assert_eq!(strong_pinned.as_mut().take_result(), Ok(100));
         assert!(!runtime._has_new_blockage());
     }
 
@@ -319,29 +328,34 @@ mod tests {
     )]
     fn test_incompatible_with_waker_such_as_futures_lite_yield_now_step2() {
         let runtime = PtraceAsyncRuntime::new();
-        let strong_future = futures::upgrade(async {
+        let strong_builder = futures::upgrade(async {
             runtime
                 .new_pending_future(PtraceFutureTypes::WaitForSignal)
                 .await?;
             Ok::<i32, AsyncRuntimeError>(100)
         });
-        let mut test_future = pin!(async {
-            let weak_wrapper = async {
-                let guard1 = futures::downgrade(&strong_future).await;
-                match guard1.as_ref() {
-                    Ok(val1) => Ok::<i32, AsyncRuntimeError>(val1 * 5),
-                    Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
-                }
-            };
-            let (_, result) = futures_lite::future::zip(strong_future.build(), weak_wrapper).await;
-            Ok::<i32, AsyncRuntimeError>(result?)
-        });
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(runtime._has_new_blockage());
-        assert_eq!(runtime._pending_futures_size(), 1);
-        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
+        let mut strong_pinned = pin!(strong_builder);
 
-        // take_result() now, without completing the StrongFuture, will panic
-        let _ = strong_future.take_result();
+        // Creating a RAII scope to make sure we can later do: strong_pinner.as_mut()
+        {
+            let mut test_future = pin!(async {
+                let weak_wrapper = async {
+                    let guard1 = futures::downgrade(strong_pinned.as_ref()).await;
+                    match guard1.as_ref() {
+                        Ok(val1) => Ok::<i32, AsyncRuntimeError>(val1 * 5),
+                        Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
+                    }
+                };
+                let (_, result) =
+                    futures_lite::future::zip(strong_pinned.as_ref().build(), weak_wrapper).await;
+                Ok::<i32, AsyncRuntimeError>(result?)
+            });
+            assert_eq!(runtime.run_async_step(&mut test_future), None);
+            assert!(runtime._has_new_blockage());
+            assert_eq!(runtime._pending_futures_size(), 1);
+            _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
+        }
+
+        let _ = strong_pinned.as_mut().take_result();
     }
 }
