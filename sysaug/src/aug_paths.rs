@@ -397,22 +397,20 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
         // Creating a RAII scope to make sure we can later do: strong_pinned.as_mut()
         {
-            let weak_future = futures_lite::future::zip(
-                futures_lite::future::zip(
+            let weak_future = futures_lite::future::try_zip(
+                futures_lite::future::try_zip(
                     self.augment_chmod(builder_pinned.as_ref(), syscall, &state),
                     self.augment_chmod_on_creation(builder_pinned.as_ref(), syscall, &state),
                 ),
-                futures_lite::future::zip(
+                futures_lite::future::try_zip(
                     self.augment_chown(builder_pinned.as_ref(), syscall, &state),
                     self.augment_rename(builder_pinned.as_ref(), syscall, &state),
                 ),
             );
-            let (((r0, r1), (r2, r3)), _) =
-                futures_lite::future::zip(weak_future, builder_pinned.as_ref().build()).await;
-            for result in [r0, r1, r2, r3] {
-                if let Err(Some(e)) = result {
-                    return Err(e);
-                }
+            let strong_future = builder_pinned.as_ref().build();
+            let (result, _) = futures_lite::future::zip(weak_future, strong_future).await;
+            if let Err(Some(e)) = result {
+                return Err(e);
             }
         }
 
