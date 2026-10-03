@@ -6,6 +6,9 @@ use core::ops::Deref;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
+#[cfg(doc)]
+use crate::AsyncRuntime;
+
 /// AsyncYielder is a helper for concurrent loops in async.
 ///
 /// This is useful when your async future contains two or more competing loops:
@@ -54,7 +57,13 @@ pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
 /// the same future across many `futures_lite::future::zip()` branches.
 /// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`.
 ///
-/// But, to fully execute everything, you build a [StrongFuture] by passing your `weak_wrapper` future:
+/// **What's the catch?**
+///
+/// Caveat 1: Your `weak_wrapper` must only await on [WeakFuture] and nothing else.
+/// Otherwise, it **will panic**. This is to make sure you don't cause [AsyncRuntime]
+/// to yield without a valid `YieldReason`.
+///
+/// Caveat 2: To fully execute everything, you build a [StrongFuture] by passing your `weak_wrapper` future:
 ///
 /// `pinned_strong_builder.as_ref().build(weak_wrapper).await`
 #[must_use = "futures do nothing unless you `.await` or poll them"]
@@ -87,7 +96,13 @@ pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
 /// the same future across many `futures_lite::future::zip()` branches.
 /// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`.
 ///
-/// But, to fully execute everything, you build a [StrongFuture] by passing your `weak_wrapper` future:
+/// **What's the catch?**
+///
+/// Caveat 1: Your `weak_wrapper` must only await on [WeakFuture] and nothing else.
+/// Otherwise, it **will panic**. This is to make sure you don't cause [AsyncRuntime]
+/// to yield without a valid `YieldReason`.
+///
+/// Caveat 2: To fully execute everything, you build a [StrongFuture] by passing your `weak_wrapper` future:
 ///
 /// `pinned_strong_builder.as_ref().build(weak_wrapper).await`
 #[must_use = "futures do nothing unless you `.await` or poll them"]
@@ -170,7 +185,9 @@ where
         if is_strong_complete {
             // This is a re-entry, meaning some weak futures are still pending,
             // meaning some weak futures were waiting on other futures, which is forbidden
-            panic!("");
+            panic!(
+                "StrongFuture was polled after completion! Please make sure your weak_wrapper doesn't await on anything else."
+            );
         }
 
         let mut weak_result: Option<F2::Output> = None;
@@ -207,20 +224,27 @@ where
 
 /// Upgrades any future to obtain a [StrongWeakBuilder], which builds a [StrongFuture]
 ///
-/// Caveat: This [StrongFuture] consumes your original future. This means three things:
+/// Usage: This [StrongFuture] consumes your original future. To make use of the original future:
 ///
-/// 1. You **must** await on [StrongWeakBuilder::build]. Otherwise, the original future won't run at all.
-/// 2. You **must** create a [WeakFuture] to obtain access to the resulting data.
-/// 3. You **must** pin this [StrongWeakBuilder], and thus avoid moving the future stored in it.
+/// 1. Please pin this [StrongWeakBuilder], and thus avoid moving the future stored in it.
+/// 2. Please create a list of many [WeakFuture] instances to obtain access to the resulting data.
+/// 3. Please `futures_lite::future::zip()` the list of [WeakFuture] instances so that they run together.
+/// 4. Please await on [StrongWeakBuilder::build]. Otherwise, the original future won't run at all.
 ///
-/// Why would anyone want this?
+/// **Why would anyone want this?**
 ///
 /// This strong-weak execution model helps if you need multiple "Weak" references to
 /// the same future, so that different handling logics can blend together, using a
 /// `futures_lite::future::zip()` call.
 /// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`.
 ///
-/// **Caveat**: To fully execute everything, you build a [StrongFuture] by passing your `weak_wrapper` future:
+/// **What's the catch?**
+///
+/// Caveat 1: Your `weak_wrapper` must only await on [WeakFuture] and nothing else.
+/// Otherwise, it **will panic**. This is to make sure you don't cause [AsyncRuntime]
+/// to yield without a valid `YieldReason`.
+///
+/// Caveat 2: To fully execute everything, you build a [StrongFuture] by passing your `weak_wrapper` future:
 ///
 /// `pinned_strong_builder.as_ref().build(weak_wrapper).await`
 pub fn upgrade<'a, T, F>(future: F) -> StrongWeakBuilder<T, F>
@@ -250,11 +274,10 @@ where
 }
 
 impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
-    /// This function will build a [StrongFuture] which runs the actual, original future.
+    /// This function will build a [StrongFuture] which runs the actual, original future,
+    /// which fully executes the original future, the strong future, and all weak futures.
     ///
-    /// To fully execute everything, you build a [StrongFuture] by passing your `weak_wrapper` future:
-    ///
-    /// `pinned_strong_builder.as_ref().build(weak_wrapper).await`
+    /// Please read the full list of caveats in [WeakFuture] before using this function.
     pub fn build<'a, F2>(self: Pin<&'a Self>, weak_wrapper: F2) -> StrongFuture<'a, T, F, F2>
     where
         F: Future<Output = T>,
@@ -397,6 +420,53 @@ mod tests {
             _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
         }
 
+        let _ = strong_pinned.as_mut().take_result();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "StrongFuture was polled after completion! Please make sure your weak_wrapper doesn't await on anything else."
+    )]
+    fn test_panics_if_weak_wrapper_awaits_too_much() {
+        let runtime = PtraceAsyncRuntime::new();
+        let strong_builder = futures::upgrade(async {
+            runtime
+                .new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall)
+                .await?;
+            Ok::<i32, AsyncRuntimeError>(100)
+        });
+        let mut strong_pinned = pin!(strong_builder);
+        // Creating a RAII scope to make sure we can later do: strong_pinned.as_mut()
+        {
+            let mut test_future = pin!(async {
+                let weak_wrapper = async {
+                    let guard1 = futures::downgrade(strong_pinned.as_ref()).await;
+                    let _ = runtime
+                        .new_pending_future(PtraceFutureTypes::WaitForSignal)
+                        .await;
+                    match guard1.as_ref() {
+                        Ok(val1) => Ok::<i32, AsyncRuntimeError>(val1 * 5),
+                        Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
+                    }
+                };
+                let result = strong_pinned.as_ref().build(weak_wrapper).await;
+                Ok::<i32, AsyncRuntimeError>(result?)
+            });
+            assert_eq!(runtime.run_async_step(&mut test_future), None);
+            assert!(runtime._has_new_blockage());
+            assert_eq!(runtime._pending_futures_size(), 1);
+            _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
+            // Unblock the strong future
+            let event = PtraceStatus {};
+            runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event.clone());
+            assert_eq!(runtime.run_async_step(&mut test_future), None);
+            assert_eq!(runtime._pending_futures_size(), 1);
+            _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
+            // Unblock the extra future
+            let event = PtraceStatus {};
+            runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event.clone());
+            let _ = runtime.run_async_step(&mut test_future);
+        }
         let _ = strong_pinned.as_mut().take_result();
     }
 }
