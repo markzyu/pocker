@@ -244,7 +244,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     // ------------------------ Path Modifications (Chroot) ------------------------
     // -----------------------------------------------------------------------------
 
-    pub async fn calc_real_path_simple(
+    pub fn calc_real_path_simple(
         &self,
         orig_path: &Path,
         syscall: &SyscallInfo,
@@ -261,11 +261,11 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             }
         }
 
-        self.get_mod_path(syscall, orig_path, new_path, false).await
+        self.get_mod_path(syscall, orig_path, new_path, false)
     }
 
     // Calculate real path of file + following symlinks that use fake paths
-    pub async fn calc_real_path_recurse(
+    pub fn calc_real_path_recurse(
         &self,
         orig_path: &Path,
         syscall: &SyscallInfo,
@@ -273,22 +273,15 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         args: &[usize],
     ) -> Result<PathAction, SysAugError> {
         visited.insert(orig_path.into());
-        let action = self.calc_real_path_simple(orig_path, syscall).await?;
+        let action = self.calc_real_path_simple(orig_path, syscall)?;
         if let PathAction::Override(real_path) = &action {
-            let result = self
-                .calc_follow_symlink(real_path, syscall, &mut visited, args)
-                .await?;
+            let result = self.calc_follow_symlink(real_path, syscall, &mut visited, args)?;
             match result {
                 Err(false) => return Ok(action),
                 Err(true) => return Ok(PathAction::ELOOP),
                 Ok(link) => {
-                    let new_action = Box::pin(self.calc_real_path_recurse(
-                        link.as_path(),
-                        syscall,
-                        visited,
-                        args,
-                    ))
-                    .await?;
+                    let new_action =
+                        self.calc_real_path_recurse(link.as_path(), syscall, visited, args)?;
                     if new_action == PathAction::None {
                         return Ok(PathAction::Override(link));
                     } else {
@@ -304,20 +297,13 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             }
 
             let orig_path_buf: PathBuf = orig_path.into();
-            let result = self
-                .calc_follow_symlink(&orig_path_buf, syscall, &mut visited, args)
-                .await?;
+            let result = self.calc_follow_symlink(&orig_path_buf, syscall, &mut visited, args)?;
             match result {
                 Err(false) => return Ok(PathAction::None),
                 Err(true) => return Ok(PathAction::ELOOP),
                 Ok(link) => {
-                    let new_action = Box::pin(self.calc_real_path_recurse(
-                        link.as_path(),
-                        syscall,
-                        visited,
-                        args,
-                    ))
-                    .await?;
+                    let new_action =
+                        self.calc_real_path_recurse(link.as_path(), syscall, visited, args)?;
                     if new_action == PathAction::None {
                         return Ok(PathAction::Override(link));
                     } else {
@@ -330,7 +316,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     }
 
     /// Follow only one layer of symlink without doing translations (Returns Ok(Err(true)) if loop)
-    pub async fn calc_follow_symlink(
+    pub fn calc_follow_symlink(
         &self,
         real_path: &PathBuf,
         syscall: &SyscallInfo,
@@ -352,8 +338,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 let new_part = format!("/proc/{}", self.pid);
                 let new_path_str = real_path_str.replace("/proc/self", &new_part);
                 let new_path_buf = PathBuf::from(new_path_str);
-                return Box::pin(self.calc_follow_symlink(&new_path_buf, syscall, visited, args))
-                    .await;
+                return self.calc_follow_symlink(&new_path_buf, syscall, visited, args);
             }
         }
 
@@ -387,15 +372,13 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     }
 
     // Same as calc_real_path_recurse
-    pub async fn calc_real_path(
+    pub fn calc_real_path(
         &self,
         orig_path: &Path,
         syscall: &SyscallInfo,
         args: &[usize],
     ) -> Result<PathAction, SysAugError> {
-        let result = self
-            .calc_real_path_recurse(orig_path, syscall, HashSet::new(), args)
-            .await?;
+        let result = self.calc_real_path_recurse(orig_path, syscall, HashSet::new(), args)?;
         event!(
             Level::DEBUG,
             "Following symlink {:?} -> {:?}",
@@ -408,7 +391,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     // There are SysAugConfig configurations that can "modify" a guest/host path. This function applies them.
     // reverse: false = generating real paths on disk, true = generating fake paths from container
     // perspective
-    pub async fn get_mod_path(
+    pub fn get_mod_path(
         &self,
         _syscall: &SyscallInfo,
         orig_path: &Path,
