@@ -1,14 +1,14 @@
 ## So this is just PRoot?
 
-This is inspiried by PRoot -- both make use of SECCOMP to improve performance. Both can intercept system calls through ptrace() and simulate the chroot() system call so that we can chroot into a different Linux Distro on a non-rooted phone. The main difference is this: This solution is multithreaded, while proot itself is single threaded.
+This is inspiried by PRoot -- both make use of SECCOMP to improve performance. Both can intercept system calls through ptrace() and simulate the chroot() system call so that we can chroot into a different Linux Distro on a non-rooted phone. 
 
-You should just use PRoot instead. It has a history of proven stability and success.
+My goal is to run OCI containers on modern Android devices, without rooting the phone, without a full Linux VM, by creating an accompanying configuration file that tells the ptrace how to glue the file system back together. Additionally, pocker is multithreaded, while proot is single threaded.
+
+**You should just use PRoot instead**. It has a history of proven stability and success.
 
 My project is still in its early stage. It barely works right now. Basic shell commands work but `apt-get` is broken.
 
-My goal is to run OCI containers on modern Android devices, without rooting the phone, without a full Linux VM, by creating an accompanying configuration file that tells the ptrace how to glue the file system back together.
-
-```
+```bash
 LD_PRELOAD="" cargo run --bin pocker -- run alpine
 ```
 
@@ -34,7 +34,7 @@ Termux has a dynamic loader in `LD_PRELOAD`, which exists outside our pocker con
 
 Because of this, you must manually unset the env var on Android
 
-```
+```bash
 cargo build
 LD_PRELOAD="" ./target/debug/pocker run alpine
 ```
@@ -43,7 +43,7 @@ LD_PRELOAD="" ./target/debug/pocker run alpine
 
 By default, pocker will try to run ptrace() syscalls on dedicated threads (one thread per tracee process)
 
-![Multi-threading mode](MultiThreadingMode.png)
+![Image, Multi-threading mode](MultiThreadingMode.png)
 
 But this requires the permission for PTRACE_ATTACH. And on some systems, this permission is blocked, and tracer can only attach to their direct children from main threads.
 
@@ -51,7 +51,7 @@ But this requires the permission for PTRACE_ATTACH. And on some systems, this pe
 
 If the host OS does not permit PTRACE_ATTACH, pocker will try to cumulate ptrace() syscalls on main thread from all tracee processes, and offload each tracee's own event loop and calculations to other threads. (Main thread is busy executing ptrace() calls while other threads queue ptrace actions)
 
-![Fallback threading mode](FallbackThreadingMode.png)
+![Image, Fallback threading mode](FallbackThreadingMode.png)
 
 ## Project structure
 
@@ -102,7 +102,7 @@ Here are some (outdated) instructions about Android cross-compilation without Te
 
 - Install GNU toolchains (`arm-linux-*-gcc` and `aarch64-linux-*-gcc`)
 - Update your `~/.cargo/config`:
-  ```
+  ```toml
   [target.armv7-unknown-linux-gnueabihf]
   rustflags = ["-C", "target-feature=+crt-static"]
   linker = "arm-linux-foobar-gcc"
@@ -128,7 +128,7 @@ This project has existed for many years and had used other names such as `pconta
 Copyright (c) 2026 Zhongzhi Yu
 
 This project is licensed under the GNU General Public License v3.0 (GPLv3) - 
-see [COPYING](COPYING) for details
+see [COPYING](https://github.com/markzyu/pocker/blob/master/COPYING) for details
 
-Additionally, for the krsm crate, and that crate only, you can choose to use
-the [MIT License](krsm/LICENSE) instead
+Additionally, for the `krsm` crate, and for that crate only, you can choose to use
+the [MIT License](https://github.com/markzyu/pocker/blob/master/krsm/LICENSE) instead
