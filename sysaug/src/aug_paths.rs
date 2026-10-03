@@ -117,30 +117,37 @@ impl AugmentState {
         Ok(false)
     }
 
-    /// `iter_fn(pathbuf at i, pathbuf at j)`
+    /// `iter_fn(pathbuf at i)` if only called if i exists
     fn saved_path_idx(
         &self,
         i: usize,
-        mut iter_fn: impl FnMut(Option<&PathBuf>) -> Result<(), SysAugError>,
+        mut iter_fn: impl FnMut(&PathBuf) -> Result<(), SysAugError>,
     ) -> Result<(), SysAugError> {
         let guard = self.save_paths.borrow();
         let arr = &*guard;
-        let pathbuf1 = arr[i].as_ref();
-        iter_fn(pathbuf1)
+        if let Some(pathbuf1) = arr[i].as_ref() {
+            iter_fn(pathbuf1)?;
+        }
+        Ok(())
     }
 
-    /// `iter_fn(pathbuf at i, pathbuf at j)`
+    /// `iter_fn(pathbuf at i, pathbuf at j)` is only called if both i and j exist
     fn saved_path_pair(
         &self,
         i: usize,
         j: usize,
-        iter_fn: impl Fn(Option<&PathBuf>, Option<&PathBuf>) -> Result<(), SysAugError>,
+        iter_fn: impl Fn(&PathBuf, &PathBuf) -> Result<(), SysAugError>,
     ) -> Result<(), SysAugError> {
         let guard = self.save_paths.borrow();
         let arr = &*guard;
         let pathbuf1 = arr[i].as_ref();
         let pathbuf2 = arr[j].as_ref();
-        iter_fn(pathbuf1, pathbuf2)
+        if let Some(p1) = pathbuf1
+            && let Some(p2) = pathbuf2
+        {
+            iter_fn(p1, p2)?;
+        }
+        Ok(())
     }
 }
 
@@ -309,12 +316,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let i = i as usize;
             let j = j as usize;
             state.saved_path_pair(i, j, |path, result_path| {
-                let Some(path) = path else {
-                    return Ok(());
-                };
-                let Some(result_path) = result_path else {
-                    return Ok(());
-                };
                 let path = path.canonicalize().map_err(SysAugError::CreateHardlinkIO)?;
                 if !path.exists() {
                     return Ok(());
@@ -463,12 +464,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
         if let Some(metadir) = metadir.as_ref() {
             state.saved_path_pair(i, j, |path1, path2| {
-                let Some(path1) = path1 else {
-                    return Ok(());
-                };
-                let Some(path2) = path2 else {
-                    return Ok(());
-                };
                 let Ok(path1) = path1.canonicalize() else {
                     return Ok(());
                 };
@@ -504,9 +499,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         if let Some(metadir) = metadir.as_ref() {
             let mut is_hardlink2: bool = false;
             state.saved_path_idx(j, |path2| {
-                let Some(path2) = path2 else {
-                    return Ok(());
-                };
                 let Ok(path2) = path2.canonicalize() else {
                     return Ok(());
                 };
@@ -519,12 +511,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         }
 
         state.saved_path_pair(i, j, |path1, path2| {
-            let Some(path1) = path1 else {
-                return Ok(());
-            };
-            let Some(path2) = path2 else {
-                return Ok(());
-            };
             let path1 = self.get_metadata_path(path1.as_path())?;
             let path2 = self.get_metadata_path(path2.as_path())?;
             if let (Some(path1), Some(path2)) = (path1, path2) {
