@@ -118,6 +118,18 @@ impl AugmentState {
     }
 
     /// `iter_fn(pathbuf at i, pathbuf at j)`
+    fn saved_path_idx(
+        &self,
+        i: usize,
+        mut iter_fn: impl FnMut(Option<&PathBuf>) -> Result<(), SysAugError>,
+    ) -> Result<(), SysAugError> {
+        let guard = self.save_paths.borrow();
+        let arr = &*guard;
+        let pathbuf1 = arr[i].as_ref();
+        iter_fn(pathbuf1)
+    }
+
+    /// `iter_fn(pathbuf at i, pathbuf at j)`
     fn saved_path_pair(
         &self,
         i: usize,
@@ -346,40 +358,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             })?;
         }
 
-        // Handle rename when target is a hardlink
-        if let Some((i, j)) = syscall.renames_metadata
-            && let Some(metadir) = self.get_metadata_dir()
-        {
-            let i = i as usize;
-            let j = j as usize;
-            state.saved_path_pair(i, j, |path1, path2| {
-                let Some(path1) = path1 else {
-                    return Ok(());
-                };
-                let Some(path2) = path2 else {
-                    return Ok(());
-                };
-                let Ok(path1) = path1.canonicalize() else {
-                    return Ok(());
-                };
-                let Ok(path2) = path2.canonicalize() else {
-                    return Ok(());
-                };
-                if !path1.exists() || !path2.exists() {
-                    return Ok(());
-                }
-                let is_hardlink1 = path1.starts_with(&metadir);
-                let is_hardlink2 = path2.starts_with(&metadir);
-                if is_hardlink1 && is_hardlink2 && path1 == path2 {
-                    state.set_skip_syscall(0);
-                } else if is_hardlink2 {
-                    // Decrease reference counter by 1
-                    self.delete_metadata_for_file(path2.as_path())?;
-                }
-                Ok(())
-            })?;
-        }
-
         let syscall_future = async {
             // Write new paths into register
             let need_skip_syscall = { state.need_skip_syscall.borrow().clone() };
@@ -424,11 +402,14 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     self.augment_chmod(builder_pinned.as_ref(), syscall, &state),
                     self.augment_chmod_on_creation(builder_pinned.as_ref(), syscall, &state),
                 ),
-                self.augment_chown(builder_pinned.as_ref(), syscall, &state),
+                futures_lite::future::zip(
+                    self.augment_chown(builder_pinned.as_ref(), syscall, &state),
+                    self.augment_rename(builder_pinned.as_ref(), syscall, &state),
+                ),
             );
-            let (((r0, r1), r2), _) =
+            let (((r0, r1), (r2, r3)), _) =
                 futures_lite::future::zip(weak_future, builder_pinned.as_ref().build()).await;
-            for result in [r0, r1, r2] {
+            for result in [r0, r1, r2, r3] {
                 if let Err(Some(e)) = result {
                     return Err(e);
                 }
@@ -446,7 +427,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             self.on_stat_syscall_exit(syscall, orig_args, &*save_paths)
                 .await?;
             self.on_link_syscall_exit(syscall, orig_args, &*save_paths)?;
-            self.on_rename_syscall_exit(syscall, orig_args, &*save_paths)?;
         }
 
         if retval == 0 {
@@ -468,39 +448,92 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     }
 
     /// Rename metadata as well.
-    fn on_rename_syscall_exit(
+    async fn augment_rename<F: Future<Output = StrongWeakOutput>>(
         &self,
+        future_builder: Pin<&StrongWeakBuilder<F>>,
         syscall: &SyscallInfo,
-        _args: &[usize],
-        save_paths: &[Option<PathBuf>],
-    ) -> Result<(), SysAugError> {
+        state: &AugmentState,
+    ) -> Result<(), Option<SysAugError>> {
         // First, check for hardlinks
-        // Reminder: This is different from on_syscall_enter because files changed
-        if let Some((_, j)) = syscall.renames_metadata
-            && let Some(metadir) = self.get_metadata_dir()
-        {
-            let j = j as usize;
-            if let Some(path2) = save_paths[j].as_ref()
-                && let Ok(path2) = path2.canonicalize()
-            {
-                let is_hardlink2 = path2.starts_with(&metadir);
-                if is_hardlink2 {
+        // Handle rename when target is a hardlink
+        let Some((i, j)) = syscall.renames_metadata else {
+            return Ok(());
+        };
+        let metadir = self.get_metadata_dir();
+        let i = i as usize;
+        let j = j as usize;
+
+        if let Some(metadir) = metadir.as_ref() {
+            state.saved_path_pair(i, j, |path1, path2| {
+                let Some(path1) = path1 else {
+                    return Ok(());
+                };
+                let Some(path2) = path2 else {
+                    return Ok(());
+                };
+                let Ok(path1) = path1.canonicalize() else {
+                    return Ok(());
+                };
+                let Ok(path2) = path2.canonicalize() else {
+                    return Ok(());
+                };
+                if !path1.exists() || !path2.exists() {
                     return Ok(());
                 }
+                let is_hardlink1 = path1.starts_with(metadir);
+                let is_hardlink2 = path2.starts_with(metadir);
+                if is_hardlink1 && is_hardlink2 && path1 == path2 {
+                    state.set_skip_syscall(0);
+                } else if is_hardlink2 {
+                    // Decrease reference counter by 1
+                    self.delete_metadata_for_file(path2.as_path())?;
+                }
+                Ok(())
+            })?;
+        }
+
+        // Resume system call, and drop the WeakFutureGuard
+        let retval = {
+            let guard = krsm::downgrade(future_builder).await;
+            guard.as_ref().or(Err(None))?.1
+        };
+
+        if retval < 0 {
+            return Ok(());
+        }
+
+        // After system call: Names are different from before-syscall because files changed
+        if let Some(metadir) = metadir.as_ref() {
+            let mut is_hardlink2: bool = false;
+            state.saved_path_idx(j, |path2| {
+                let Some(path2) = path2 else {
+                    return Ok(());
+                };
+                let Ok(path2) = path2.canonicalize() else {
+                    return Ok(());
+                };
+                is_hardlink2 = path2.starts_with(metadir);
+                Ok(())
+            })?;
+            if is_hardlink2 {
+                return Ok(());
             }
         }
 
-        if let Some((i, j)) = syscall.renames_metadata {
-            let i = i as usize;
-            let j = j as usize;
-            let path1 = save_paths[i].as_ref().unwrap().as_path();
-            let path2 = save_paths[j].as_ref().unwrap().as_path();
-            let path1 = self.get_metadata_path(path1)?;
-            let path2 = self.get_metadata_path(path2)?;
+        state.saved_path_pair(i, j, |path1, path2| {
+            let Some(path1) = path1 else {
+                return Ok(());
+            };
+            let Some(path2) = path2 else {
+                return Ok(());
+            };
+            let path1 = self.get_metadata_path(path1.as_path())?;
+            let path2 = self.get_metadata_path(path2.as_path())?;
             if let (Some(path1), Some(path2)) = (path1, path2) {
                 std::fs::rename(path1, path2).map_err(SysAugError::RenameMetadata)?;
             }
-        }
+            Ok(())
+        })?;
         Ok(())
     }
 
