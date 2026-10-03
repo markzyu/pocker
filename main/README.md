@@ -43,7 +43,7 @@ LD_PRELOAD="" ./target/debug/pocker run alpine
 
 By default, pocker will try to run ptrace() syscalls on dedicated threads (one thread per tracee process)
 
-![Image, Multi-threading mode](main/MultiThreadingMode.png)
+![Image, Multi-threading mode](MultiThreadingMode.png)
 
 But this requires the permission for PTRACE_ATTACH. And on some systems, this permission is blocked, and tracer can only attach to their direct children from main threads.
 
@@ -51,7 +51,7 @@ But this requires the permission for PTRACE_ATTACH. And on some systems, this pe
 
 If the host OS does not permit PTRACE_ATTACH, pocker will try to cumulate ptrace() syscalls on main thread from all tracee processes, and offload each tracee's own event loop and calculations to other threads. (Main thread is busy executing ptrace() calls while other threads queue ptrace actions)
 
-![Image, Fallback threading mode](main/FallbackThreadingMode.png)
+![Image, Fallback threading mode](FallbackThreadingMode.png)
 
 ## Project structure
 
