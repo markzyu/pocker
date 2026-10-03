@@ -57,14 +57,12 @@ pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
 ///
 /// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
+pub struct StrongFuture<'a, T, F: Future<Output = T>> {
     result: &'a RefCell<Option<T>>,
     timing: &'a RefCell<F>,
-    should_poll_timing: RefCell<bool>,
     /// Strong yields to Weak at the beginning to give weak a chance to initialize
     yielder: &'a AsyncYielder,
     should_yield: RefCell<bool>,
-    weak_wrapper: RefCell<F2>,
 }
 
 /// A weak future is like a borrowed reference to a [StrongFuture]. You can have as
@@ -163,12 +161,11 @@ impl<'a, T> Deref for WeakFutureGuard<'a, T> {
     }
 }
 
-impl<'a, T, F, F2> Future for StrongFuture<'a, T, F, F2>
+impl<'a, T, F> Future for StrongFuture<'a, T, F>
 where
     F: Future<Output = T>,
-    F2: Future,
 {
-    type Output = F2::Output;
+    type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let should_yield = self.should_yield.replace(false);
@@ -180,20 +177,13 @@ where
             };
         }
 
-        let should_poll_timing = { *self.should_poll_timing.borrow() };
-        if should_poll_timing {
-            let mut future2 = self.timing.borrow_mut();
-            let pinned2 = unsafe { Pin::new_unchecked(&mut *future2) };
-            let Poll::Ready(v) = pinned2.poll(cx) else {
-                return Poll::Pending;
-            };
-            self.result.replace(Some(v));
-            self.should_poll_timing.replace(false);
-        }
-
-        let mut future3 = self.weak_wrapper.borrow_mut();
-        let pinned3 = unsafe { Pin::new_unchecked(&mut *future3) };
-        pinned3.poll(cx)
+        let mut future2 = self.timing.borrow_mut();
+        let pinned2 = unsafe { Pin::new_unchecked(&mut *future2) };
+        let Poll::Ready(v) = pinned2.poll(cx) else {
+            return Poll::Pending;
+        };
+        self.result.replace(Some(v));
+        Poll::Ready(())
     }
 }
 
@@ -245,15 +235,12 @@ impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
     ///
     /// This function will build a [StrongFuture] which runs the resulting `weak_wrapper` future,
     /// as well as the original future that was consumed by [upgrade].
-    pub fn build<F2>(&self, weak_wrapper: F2) -> StrongFuture<'_, T, F, F2>
+    pub fn build(&self) -> StrongFuture<'_, T, F>
     where
         F: Future<Output = T>,
-        F2: Future,
     {
         StrongFuture {
-            weak_wrapper: RefCell::new(weak_wrapper),
             should_yield: RefCell::new(true),
-            should_poll_timing: RefCell::new(true),
             yielder: &self.yielder,
             result: &self.result,
             timing: &self.timing,
@@ -327,7 +314,8 @@ mod tests {
                     }
                 },
             );
-            let (result1, result2) = strong_future.build(weak_wrapper).await;
+            let (_, (result1, result2)) =
+                futures_lite::future::zip(strong_future.build(), weak_wrapper).await;
             Ok::<i32, AsyncRuntimeError>(result1? + result2?)
         });
 
@@ -373,7 +361,7 @@ mod tests {
                     Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
                 }
             };
-            let result = strong_future.build(weak_wrapper).await;
+            let (_, result) = futures_lite::future::zip(strong_future.build(), weak_wrapper).await;
             Ok::<i32, AsyncRuntimeError>(result?)
         });
         // The first poll is wasted on AsyncYielder
