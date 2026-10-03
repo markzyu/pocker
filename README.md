@@ -8,7 +8,7 @@ My goal is to run OCI containers on modern Android devices, without rooting the 
 
 My project is still in its early stage. It barely works right now. Basic shell commands work but `apt-get` is broken.
 
-```
+```bash
 LD_PRELOAD="" cargo run --bin pocker -- run alpine
 ```
 
@@ -34,7 +34,7 @@ Termux has a dynamic loader in `LD_PRELOAD`, which exists outside our pocker con
 
 Because of this, you must manually unset the env var on Android
 
-```
+```bash
 cargo build
 LD_PRELOAD="" ./target/debug/pocker run alpine
 ```
