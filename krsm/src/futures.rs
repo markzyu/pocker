@@ -32,6 +32,8 @@ struct AsyncYielderFuture<'a> {
 ///
 /// You can obtain one by calling [upgrade] on any [Future]
 pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
+    /// Strong yields to Weak at the beginning to give weak a chance to initialize
+    yielder: AsyncYielder,
     result: RefCell<Option<T>>,
     timing: RefCell<F>,
     _marker: PhantomPinned,
@@ -58,6 +60,8 @@ pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
 pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
     result: &'a RefCell<Option<T>>,
     timing: &'a RefCell<F>,
+    /// Strong yields to Weak at the beginning to give weak a chance to initialize
+    yield_ticket: RefCell<AsyncYielderFuture<'a>>,
     weak_wrapper: RefCell<F2>,
 }
 
@@ -87,6 +91,8 @@ pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct WeakFuture<'a, T> {
     result: &'a RefCell<Option<T>>,
+    /// Strong yields to Weak at the beginning to give weak a chance to initialize
+    yielder: &'a AsyncYielder,
 }
 
 /// This is an RAII guard to help you access the output from `.await` of a [WeakFuture]
@@ -100,12 +106,16 @@ pub struct WeakFutureGuard<'a, T> {
 impl AsyncYielder {
     /// In the example from above, `loop1` calls this function yield to `loop2`
     pub async fn yield_now(&self) {
+        let future = self.create_yield_ticket();
+        future.await;
+    }
+
+    fn create_yield_ticket(&self) -> AsyncYielderFuture<'_> {
         let orig_poll_number = { *self.num_polls.borrow() };
-        let future = AsyncYielderFuture {
+        AsyncYielderFuture {
             async_yielder: self,
             orig_poll_number,
-        };
-        future.await;
+        }
     }
 
     /// In the example from above, as soon as `loop2` gets to execute and finishes its turn,
@@ -138,7 +148,11 @@ impl<'a, T> Future for WeakFuture<'a, T> {
             true => Poll::Ready(WeakFutureGuard {
                 guard: self.result.borrow(),
             }),
-            false => Poll::Pending,
+            // Wait for the weak future wrapper to run once before unblocking StrongFuture
+            false => {
+                self.yielder.unblock();
+                Poll::Pending
+            }
         }
     }
 }
@@ -159,16 +173,22 @@ where
     type Output = F2::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut future = self.timing.borrow_mut();
-        let pinned = unsafe { Pin::new_unchecked(&mut *future) };
-        match pinned.poll(cx) {
+        let mut future1 = self.yield_ticket.borrow_mut();
+        let pinned1 = unsafe { Pin::new_unchecked(&mut *future1) };
+        let Poll::Ready(_) = pinned1.poll(cx) else {
+            return Poll::Pending;
+        };
+
+        let mut future2 = self.timing.borrow_mut();
+        let pinned2 = unsafe { Pin::new_unchecked(&mut *future2) };
+        match pinned2.poll(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(v) => {
                 self.result.replace(Some(v));
 
-                let mut future2 = self.weak_wrapper.borrow_mut();
-                let pinned2 = unsafe { Pin::new_unchecked(&mut *future2) };
-                pinned2.poll(cx)
+                let mut future3 = self.weak_wrapper.borrow_mut();
+                let pinned3 = unsafe { Pin::new_unchecked(&mut *future3) };
+                pinned3.poll(cx)
             }
         }
     }
@@ -195,6 +215,7 @@ where
     StrongWeakBuilder {
         result: RefCell::new(None),
         timing: RefCell::new(future),
+        yielder: AsyncYielder::default(),
         _marker: PhantomPinned::default(),
     }
 }
@@ -211,6 +232,7 @@ where
 {
     WeakFuture {
         result: &strong.result,
+        yielder: &strong.yielder,
     }
 }
 
@@ -227,6 +249,7 @@ impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
     {
         StrongFuture {
             weak_wrapper: RefCell::new(weak_wrapper),
+            yield_ticket: RefCell::new(self.yielder.create_yield_ticket()),
             result: &self.result,
             timing: &self.timing,
         }
