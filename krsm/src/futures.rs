@@ -231,6 +231,19 @@ impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
             timing: &self.timing,
         }
     }
+
+    /// Take the result of the original, completed [StrongFuture]
+    ///
+    /// This method should only be called after the future from [StrongWeakBuilder::build]
+    /// completes.
+    ///
+    /// If the future is not complete, this method **will panic**.
+    pub fn take_result(&self) -> T {
+        let mut guard = self.result.borrow_mut();
+        guard.take().expect(
+            "StrongFuture should have completed before calling StrongWeakBuilder::take_result",
+        )
+    }
 }
 
 #[cfg(test)]
@@ -302,6 +315,39 @@ mod tests {
         assert_eq!(runtime._pending_futures_size(), 0);
         assert_eq!(strong_future.result.borrow().clone(), Some(Ok(100)));
         assert_eq!(output, Some(Ok(1100)));
+        assert_eq!(strong_future.take_result(), Ok(100));
         assert!(!runtime._has_new_blockage());
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "StrongFuture should have completed before calling StrongWeakBuilder::take_result"
+    )]
+    fn test_incompatible_with_waker_such_as_futures_lite_yield_now_step2() {
+        let runtime = PtraceAsyncRuntime::new();
+        let strong_future = futures::upgrade(async {
+            runtime
+                .new_pending_future(PtraceFutureTypes::WaitForSignal)
+                .await?;
+            Ok::<i32, AsyncRuntimeError>(100)
+        });
+        let mut test_future = pin!(async {
+            let weak_wrapper = async {
+                let guard1 = futures::downgrade(&strong_future).await;
+                match guard1.as_ref() {
+                    Ok(val1) => Ok::<i32, AsyncRuntimeError>(val1 * 5),
+                    Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
+                }
+            };
+            let result = strong_future.build(weak_wrapper).await;
+            Ok::<i32, AsyncRuntimeError>(result?)
+        });
+        assert_eq!(runtime.run_async_step(&mut test_future), None);
+        assert!(runtime._has_new_blockage());
+        assert_eq!(runtime._pending_futures_size(), 1);
+        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
+
+        // take_result() now, without completing the StrongFuture, will panic
+        let _ = strong_future.take_result();
     }
 }
