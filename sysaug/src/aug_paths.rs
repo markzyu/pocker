@@ -420,8 +420,8 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             ),
             self.augment_chown(&future_builder, syscall, &state),
         );
-        let (_, ((r0, r1), r2)) =
-            futures_lite::future::zip(future_builder.build(), weak_future).await;
+        let (((r0, r1), r2), _) =
+            futures_lite::future::zip(weak_future, future_builder.build()).await;
         for result in [r0, r1, r2] {
             if let Err(Some(e)) = result {
                 return Err(e);

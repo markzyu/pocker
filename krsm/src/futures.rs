@@ -32,8 +32,6 @@ struct AsyncYielderFuture<'a> {
 ///
 /// You can obtain one by calling [upgrade] on any [Future]
 pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
-    /// Strong yields to Weak at the beginning to give weak a chance to initialize
-    yielder: AsyncYielder,
     result: RefCell<Option<T>>,
     timing: RefCell<F>,
     _marker: PhantomPinned,
@@ -60,9 +58,6 @@ pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
 pub struct StrongFuture<'a, T, F: Future<Output = T>> {
     result: &'a RefCell<Option<T>>,
     timing: &'a RefCell<F>,
-    /// Strong yields to Weak at the beginning to give weak a chance to initialize
-    yielder: &'a AsyncYielder,
-    should_yield: RefCell<bool>,
 }
 
 /// A weak future is like a borrowed reference to a [StrongFuture]. You can have as
@@ -91,8 +86,6 @@ pub struct StrongFuture<'a, T, F: Future<Output = T>> {
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct WeakFuture<'a, T> {
     result: &'a RefCell<Option<T>>,
-    /// Strong yields to Weak at the beginning to give weak a chance to initialize
-    yielder: &'a AsyncYielder,
 }
 
 /// This is an RAII guard to help you access the output from `.await` of a [WeakFuture]
@@ -145,10 +138,7 @@ impl<'a, T> Future for WeakFuture<'a, T> {
                 guard: self.result.borrow(),
             }),
             // Wait for the weak future wrapper to run once before unblocking StrongFuture
-            false => {
-                self.yielder.unblock();
-                Poll::Pending
-            }
+            false => Poll::Pending,
         }
     }
 }
@@ -168,15 +158,6 @@ where
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let should_yield = self.should_yield.replace(false);
-        if should_yield {
-            let future1 = self.yielder.yield_now();
-            let pinned1 = pin!(future1);
-            let Poll::Ready(_) = pinned1.poll(cx) else {
-                return Poll::Pending;
-            };
-        }
-
         let mut future2 = self.timing.borrow_mut();
         let pinned2 = unsafe { Pin::new_unchecked(&mut *future2) };
         let Poll::Ready(v) = pinned2.poll(cx) else {
@@ -208,7 +189,6 @@ where
     StrongWeakBuilder {
         result: RefCell::new(None),
         timing: RefCell::new(future),
-        yielder: AsyncYielder::default(),
         _marker: PhantomPinned::default(),
     }
 }
@@ -225,7 +205,6 @@ where
 {
     WeakFuture {
         result: &strong.result,
-        yielder: &strong.yielder,
     }
 }
 
@@ -240,8 +219,6 @@ impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
         F: Future<Output = T>,
     {
         StrongFuture {
-            should_yield: RefCell::new(true),
-            yielder: &self.yielder,
             result: &self.result,
             timing: &self.timing,
         }
