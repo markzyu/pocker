@@ -1,43 +1,15 @@
 // SPDX-License-Identifier: MIT OR GPL-3.0-or-later
-use crate::common::{AsyncRuntimeError, FixedSizedMap};
-use core::cell::RefCell;
+use core::cell::{Ref, RefCell};
 use core::future::Future;
+use core::marker::PhantomPinned;
+use core::ops::Deref;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
-use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use core::task::{Context, Poll};
 
-/// The KRSM async runtime
-///
-/// Type Parameters:
-///
-/// * `YieldReason`: This must be an Enum that derivces [Copy], [Eq], and [Ord]
-/// * `YieldResponse`: This should be an Enum with similar variants to `YieldReason`.
-///   But it doesn't have to derive the same traits.
-/// * `MAX_PENDING`: See the "Caveat 2" section of this crate's README doc
-///
-/// This runtime does **not** support tokio, async I/O, or external async utilities.
-///
-/// It **only** supports parts of `futures_lite::future`, including these three helper functions:
-///
-/// > `zip()`, `or()`, `poll_fn()`.
-///
-/// It especially does not support any invocation of the [Waker]. If you await on
-/// an external async function which tries to access the [Waker], the runtime
-/// **will panic**.
-///
-/// The use of `async` is purely to avoid writing a state machine switch-case.
-#[derive(Debug)]
-pub struct AsyncRuntime<
-    YieldReason: Copy + Eq + Ord,
-    YieldResponse,
-    const MAX_PENDING: usize = 1024,
-> {
-    has_unblock: RefCell<Option<(YieldReason, YieldResponse)>>,
-    has_new_future: AtomicBool,
-    pub(crate) pending_futures: FixedSizedMap<YieldReason, usize, MAX_PENDING>,
-}
+#[cfg(doc)]
+use crate::AsyncRuntime;
 
-/// AsyncYield is a helper for concurrent loops in async.
+/// AsyncYielder is a helper for concurrent loops in async.
 ///
 /// This is useful when your async future contains two or more competing loops:
 ///      `futures_lite::or(loop1, loop2).await`
@@ -54,199 +26,96 @@ pub struct AsyncYielder {
     num_polls: RefCell<usize>,
 }
 
-/// This internal struct helps untrack any futures dropped from the async runtime
-struct FutureDropGuard<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize> {
-    future_type: YieldReason,
-    runtime: &'a AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>,
-}
-
-struct BasicFuture<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize> {
-    future_type: YieldReason,
-    runtime: &'a AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>,
-}
-
 struct AsyncYielderFuture<'a> {
     orig_poll_number: usize,
     async_yielder: &'a AsyncYielder,
 }
 
-type Result<T> = core::result::Result<T, AsyncRuntimeError>;
-
-const RAW_WAKER_SHOULD_NOT_BE_CALLED: &str =
-    "Internal error, KRSM Async Runtime detected invalid usage of external async library";
-
-/// This RawWaker is similar to core::task::RawWaker::NOOP, but with an assertion:
-/// It panicks whenever any async code calls the waker at all.
-const RAW_WAKER_WITH_ASSERTIONS: RawWaker = {
-    const VTABLE: RawWakerVTable = RawWakerVTable::new(
-        // clone
-        |_| RAW_WAKER_WITH_ASSERTIONS,
-        // wake
-        |_| {
-            panic!("{}", RAW_WAKER_SHOULD_NOT_BE_CALLED);
-        },
-        // wake_by_ref
-        |_| {
-            panic!("{}", RAW_WAKER_SHOULD_NOT_BE_CALLED);
-        },
-        // drop does nothing
-        |_| {},
-    );
-    RawWaker::new(core::ptr::null(), &VTABLE)
-};
-
-impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
-    AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>
-{
-    /// Creates a new Async Runtime.
-    /// This function returns a Result but currently has no error case.
-    pub fn new() -> Self {
-        Self {
-            has_unblock: RefCell::new(None),
-            has_new_future: AtomicBool::default(),
-            pending_futures: FixedSizedMap::new(),
-        }
-    }
-
-    /// Create a new instance of pending future.
-    ///
-    /// Your async code should have access to this method. This is the **primary method**
-    /// through which your async code yields back during an async step.
-    pub async fn new_pending_future(&self, future_type: YieldReason) -> Result<YieldResponse> {
-        let guard = FutureDropGuard::<YieldReason, YieldResponse, MAX_PENDING> {
-            future_type,
-            runtime: self,
-        };
-
-        // tally relevant counters
-        self.has_new_future.store(true, Ordering::Relaxed);
-        self.pending_futures.set_default(future_type, 0)?;
-        self.pending_futures.edit(&future_type, |v| v + 1);
-
-        guard.create_future().await
-    }
-
-    /// This method is not meant to be called from within async.
-    ///
-    /// Your synchronous side of the code should have access to this method. It is the
-    /// **primary method** to run your async program.
-    ///
-    /// Returns: None if the future is still incomplete, and has yielded.
-    ///          Some(async result) if the future has finished running.
-    pub fn run_async_step<F: Future>(&self, future: &mut Pin<&mut F>) -> Option<F::Output> {
-        let waker = unsafe { Waker::from_raw(RAW_WAKER_WITH_ASSERTIONS) };
-        let mut cx = Context::from_waker(&waker);
-
-        // Poll the future exactly once
-        self.has_new_future.store(false, Ordering::Relaxed);
-        let result = match future.as_mut().poll(&mut cx) {
-            Poll::Ready(val) => Some(val),
-            Poll::Pending => None,
-        };
-
-        self.has_unblock.replace(None);
-        result
-    }
-
-    /// This method is not meant to be called from within async.
-    ///
-    /// Your synchronous side of the code uses this to unblock the futures that caused
-    /// the async step to yield.
-    ///
-    /// You must call this exactly once between `run_async_step()` calls
-    pub fn unblock_futures(&self, future_type: YieldReason, status: YieldResponse) {
-        let has_unblock = { self.has_unblock.borrow().is_some() };
-        if has_unblock {
-            panic!("Unblocking more than one future in a single async step is disallowed");
-        }
-
-        self.has_unblock.borrow_mut().replace((future_type, status));
-    }
-
-    /// This is a function used for unit testing only. It doesn't actually reflect all blockages.
-    /// For example, AsyncYield's pending status won't be reflected here.
-    fn _has_new_blockage(&self) -> bool {
-        self.has_new_future.load(Ordering::Relaxed)
-    }
-
-    /// This method is not meant to be called from within async.
-    ///
-    /// It's meant to help the caller of async runtime find out how to unblock the futures
-    ///
-    /// The `func` callback can short circuit and end iteration early by returning true.
-    ///
-    /// Returns: `Some(item)` that the `func` returned true for. `None` otherwise.
-    pub fn check_pending_reasons<F>(&self, mut func: F) -> Option<YieldReason>
-    where
-        F: FnMut(YieldReason) -> bool,
-    {
-        self.pending_futures
-            .find(|x| x.map(|v| func(v.0)) == Some(true), |(k, _)| *k)
-    }
-
-    /// This method is not meant to be called from within async.
-    ///
-    /// This is a debugging and profiling utility meant to help the downstream programmer
-    /// measure how large `MAX_PENDING` should be, in order to create a large enough, but
-    /// finite, state machine, for their use cases.
-    pub fn _pending_futures_size(&self) -> usize {
-        self.pending_futures.len()
-    }
+/// This is a builder struct + RAII guard, for both [StrongFuture] and [WeakFuture]
+///
+/// You can obtain one by calling [upgrade] on any [Future]
+pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
+    result: RefCell<Option<T>>,
+    timing: RefCell<F>,
+    _marker: PhantomPinned,
 }
 
-impl<YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize> Default
-    for AsyncRuntime<YieldReason, YieldResponse, MAX_PENDING>
-{
-    fn default() -> Self {
-        Self::new()
-    }
+/// This is a Future that drives the completion of both the original future, and any related
+/// [WeakFuture] instances
+///
+/// You can obtain one by calling [upgrade] on any [Future], and then calling [StrongWeakBuilder::build]
+///
+/// **What is Strong? and what is Weak?**
+///
+/// The "strong-weak" naming is meant to highlight the borrow relationship between the two.
+/// But another name for this pair could be "timing-data":
+///
+/// * The [StrongFuture] owns the timing of the original future, and drives it execution.
+/// * The [WeakFuture] holds a readonly reference to the `Future::Output` data of the original future
+///
+/// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
+/// the same future across many `futures_lite::future::zip()` branches.
+/// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`.
+///
+/// **What's the catch?**
+///
+/// Caveat 1: Your `weak_wrapper` must only await on [WeakFuture] and nothing else.
+/// Otherwise, it **will panic**. This is to make sure you don't cause [AsyncRuntime]
+/// to yield without a valid `YieldReason`.
+///
+/// Caveat 2: To fully execute everything, you build a [StrongFuture] by passing your `weak_wrapper` future:
+///
+/// `pinned_strong_builder.as_ref().build(weak_wrapper).await`
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
+    result: &'a RefCell<Option<T>>,
+    timing: &'a RefCell<F>,
+    weak_wrapper: RefCell<F2>,
 }
 
-impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize> Future
-    for BasicFuture<'a, YieldReason, YieldResponse, MAX_PENDING>
-{
-    type Output = YieldResponse;
-
-    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-        let matches = if let Some((curr_type, _)) = self.runtime.has_unblock.borrow().as_ref() {
-            curr_type == &self.future_type
-        } else {
-            false
-        };
-        if matches && let Some((_, status)) = self.runtime.has_unblock.take() {
-            return Poll::Ready(status);
-        }
-        Poll::Pending
-    }
+/// A weak future is like a borrowed reference to a [StrongFuture]. You can have as
+/// many weak futures as you would like, by calling [downgrade]. However, just like weak `Arc`
+/// pointers, all [WeakFuture] references expire when your [StrongWeakBuilder] is dropped.
+///
+/// You can obtain one by calling [downgrade] on any [StrongWeakBuilder]
+///
+/// But there is a catch:
+///
+/// > The output from `weak_future.await` is a [WeakFutureGuard]. And you **must** drop this guard
+/// > manually before any other `await` in your own async code. Otherwise, Rust **will panic**.
+///
+/// **What is Strong? and what is Weak?**
+///
+/// The "strong-weak" naming is meant to highlight the borrow relationship between the two.
+/// But another name for this pair could be "timing-data":
+///
+/// * The [StrongFuture] owns the timing of the original future, and drives it execution.
+/// * The [WeakFuture] holds a readonly reference to the `Future::Output` data of the original future
+///
+/// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
+/// the same future across many `futures_lite::future::zip()` branches.
+/// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`.
+///
+/// **What's the catch?**
+///
+/// Caveat 1: Your `weak_wrapper` must only await on [WeakFuture] and nothing else.
+/// Otherwise, it **will panic**. This is to make sure you don't cause [AsyncRuntime]
+/// to yield without a valid `YieldReason`.
+///
+/// Caveat 2: To fully execute everything, you build a [StrongFuture] by passing your `weak_wrapper` future:
+///
+/// `pinned_strong_builder.as_ref().build(weak_wrapper).await`
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+pub struct WeakFuture<'a, T> {
+    result: &'a RefCell<Option<T>>,
 }
 
-impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize>
-    FutureDropGuard<'a, YieldReason, YieldResponse, MAX_PENDING>
-{
-    async fn create_future(&'a self) -> Result<YieldResponse> {
-        let future = BasicFuture {
-            future_type: self.future_type,
-            runtime: self.runtime,
-        };
-        let result = future.await;
-        Ok(result)
-    }
-}
-
-impl<'a, YieldReason: Copy + Eq + Ord, YieldResponse, const MAX_PENDING: usize> Drop
-    for FutureDropGuard<'a, YieldReason, YieldResponse, MAX_PENDING>
-{
-    fn drop(&mut self) {
-        let key = self.future_type;
-        self.runtime
-            .pending_futures
-            .edit(&key, |x| if x > 0 { x - 1 } else { 0 });
-
-        let is_empty = self.runtime.pending_futures.read(&key, |x| x == &0);
-        if is_empty == Some(true) {
-            self.runtime.pending_futures.remove(&key);
-        }
-    }
+/// This is an RAII guard to help you access the output from `.await` of a [WeakFuture]
+///
+/// You **must** drop this guard manually before any other `await` in your own async code.
+/// Otherwise, Rust **will panic**.
+pub struct WeakFutureGuard<'a, T> {
+    guard: Ref<'a, Option<T>>,
 }
 
 impl AsyncYielder {
@@ -281,15 +150,169 @@ impl<'a> Future for AsyncYielderFuture<'a> {
     }
 }
 
+impl<'a, T> Future for WeakFuture<'a, T> {
+    type Output = WeakFutureGuard<'a, T>;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        let is_some = { self.result.borrow().is_some() };
+        match is_some {
+            true => Poll::Ready(WeakFutureGuard {
+                guard: self.result.borrow(),
+            }),
+            // Wait for the weak future wrapper to run once before unblocking StrongFuture
+            false => Poll::Pending,
+        }
+    }
+}
+
+impl<'a, T> Deref for WeakFutureGuard<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.guard.as_ref().unwrap()
+    }
+}
+
+impl<'a, T, F, F2> Future for StrongFuture<'a, T, F, F2>
+where
+    F: Future<Output = T>,
+    F2: Future,
+{
+    type Output = F2::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let is_strong_complete = { self.result.borrow().is_some() };
+        if is_strong_complete {
+            // This is a re-entry, meaning some weak futures are still pending,
+            // meaning some weak futures were waiting on other futures, which is forbidden
+            panic!(
+                "StrongFuture was polled after completion! Please make sure your weak_wrapper doesn't await on anything else."
+            );
+        }
+
+        let mut weak_result: Option<F2::Output> = None;
+
+        // Strong future is incomplete. Run weak wrapper first so they reach weak futures.
+        {
+            let mut future1 = self.weak_wrapper.borrow_mut();
+            let pinned1 = unsafe { Pin::new_unchecked(&mut *future1) };
+            if let Poll::Ready(v) = pinned1.poll(cx) {
+                weak_result.replace(v);
+            }
+        }
+
+        let mut future2 = self.timing.borrow_mut();
+        let pinned2 = unsafe { Pin::new_unchecked(&mut *future2) };
+        let Poll::Ready(v) = pinned2.poll(cx) else {
+            return Poll::Pending;
+        };
+        self.result.replace(Some(v));
+
+        // Strong future is complete. Run weak wrappers **in the same poll** to avoid another run_async_step
+        if let Some(result) = weak_result {
+            Poll::Ready(result)
+        } else {
+            let mut future3 = self.weak_wrapper.borrow_mut();
+            let pinned3 = unsafe { Pin::new_unchecked(&mut *future3) };
+            let Poll::Ready(v) = pinned3.poll(cx) else {
+                return Poll::Pending;
+            };
+            Poll::Ready(v)
+        }
+    }
+}
+
+/// Upgrades any future to obtain a [StrongWeakBuilder], which builds a [StrongFuture]
+///
+/// Usage: This [StrongFuture] consumes your original future. To make use of the original future:
+///
+/// 1. Please pin this [StrongWeakBuilder], and thus avoid moving the future stored in it.
+/// 2. Please create a list of many [WeakFuture] instances to obtain access to the resulting data.
+/// 3. Please `futures_lite::future::zip()` the list of [WeakFuture] instances so that they run together.
+/// 4. Please await on [StrongWeakBuilder::build]. Otherwise, the original future won't run at all.
+///
+/// **Why would anyone want this?**
+///
+/// This strong-weak execution model helps if you need multiple "Weak" references to
+/// the same future, so that different handling logics can blend together, using a
+/// `futures_lite::future::zip()` call.
+/// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`.
+///
+/// **What's the catch?**
+///
+/// Caveat 1: Your `weak_wrapper` must only await on [WeakFuture] and nothing else.
+/// Otherwise, it **will panic**. This is to make sure you don't cause [AsyncRuntime]
+/// to yield without a valid `YieldReason`.
+///
+/// Caveat 2: To fully execute everything, you build a [StrongFuture] by passing your `weak_wrapper` future:
+///
+/// `pinned_strong_builder.as_ref().build(weak_wrapper).await`
+pub fn upgrade<'a, T, F>(future: F) -> StrongWeakBuilder<T, F>
+where
+    F: Future<Output = T>,
+{
+    StrongWeakBuilder {
+        result: RefCell::new(None),
+        timing: RefCell::new(future),
+        _marker: PhantomPinned::default(),
+    }
+}
+
+/// Obtains a [WeakFuture], which is a borrowed reference to a [StrongFuture]
+///
+/// This reference serves as a new Future that can be awaited on.
+///
+/// Caveat: The result from `weak_future.await` is a [WeakFutureGuard]. And you **must** drop this guard
+/// manually before any other `await` in your own async code. Otherwise, Rust **will panic**.
+pub fn downgrade<'a, T, F>(strong: Pin<&'a StrongWeakBuilder<T, F>>) -> WeakFuture<'a, T>
+where
+    F: Future<Output = T>,
+{
+    WeakFuture {
+        result: &strong.get_ref().result,
+    }
+}
+
+impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
+    /// This function will build a [StrongFuture] which runs the actual, original future,
+    /// which fully executes the original future, the strong future, and all weak futures.
+    ///
+    /// Please read the full list of caveats in [WeakFuture] before using this function.
+    pub fn build<'a, F2>(self: Pin<&'a Self>, weak_wrapper: F2) -> StrongFuture<'a, T, F, F2>
+    where
+        F: Future<Output = T>,
+        F2: Future,
+    {
+        StrongFuture {
+            result: &self.get_ref().result,
+            timing: &self.get_ref().timing,
+            weak_wrapper: RefCell::new(weak_wrapper),
+        }
+    }
+
+    /// Take the result of the original, completed [StrongFuture]
+    ///
+    /// This method should only be called after the future from [StrongWeakBuilder::build]
+    /// completes.
+    ///
+    /// If the future is not complete, this method **will panic**.
+    pub fn take_result(self: Pin<&mut Self>) -> T {
+        let mut guard = self.result.borrow_mut();
+        guard.take().expect(
+            "StrongFuture should have completed before calling StrongWeakBuilder::take_result",
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::AsyncRuntimeError;
-    use crate::futures;
+    use crate::{AsyncRuntimeError, futures, runtime};
     use core::pin::pin;
 
     /// This is just an example YieldReason.
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
     #[repr(usize)]
+    #[allow(unused)]
     enum PtraceFutureTypes {
         WaitForPtraceSyscall,
         WaitForSignal,
@@ -299,14 +322,7 @@ mod tests {
     /// This is just an example YieldResponse
     struct PtraceStatus {}
 
-    type PtraceAsyncRuntime = futures::AsyncRuntime<PtraceFutureTypes, PtraceStatus>;
-
-    #[test]
-    fn test_basic_async_function() {
-        let runtime = PtraceAsyncRuntime::new();
-        let mut test_future = pin!(futures_lite::future::ready(123));
-        assert_eq!(runtime.run_async_step(&mut test_future), Some(123));
-    }
+    type PtraceAsyncRuntime = runtime::AsyncRuntime<PtraceFutureTypes, PtraceStatus>;
 
     fn _assert_one_pending_at(runtime: &PtraceAsyncRuntime, idx: usize, reason: PtraceFutureTypes) {
         assert_eq!(
@@ -316,240 +332,141 @@ mod tests {
     }
 
     #[test]
-    fn test_basic_blocking_on_built_future() {
+    fn test_strong_weak_futures_can_be_used_to_blend_logics() {
         let runtime = PtraceAsyncRuntime::new();
-        assert_eq!(runtime._pending_futures_size(), 0);
-
-        let mut test_future =
-            pin!(runtime.new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall));
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(runtime._has_new_blockage());
-        assert_eq!(runtime._pending_futures_size(), 1);
-        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
-
-        // Unblock an irrelevant future
-        let event1 = PtraceStatus {};
-        runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event1);
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(!runtime._has_new_blockage());
-        assert_eq!(runtime._pending_futures_size(), 1);
-        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
-
-        // Unblock the original future
-        let event2 = PtraceStatus {};
-        runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event2.clone());
-        assert_eq!(runtime._pending_futures_size(), 1);
-        let output = runtime.run_async_step(&mut test_future);
-        assert_eq!(runtime._pending_futures_size(), 0);
-        assert_eq!(output, Some(Ok(event2)));
-        assert!(!runtime._has_new_blockage());
-    }
-
-    #[test]
-    fn test_blocking_on_two_built_futures() {
-        let runtime = PtraceAsyncRuntime::new();
-        let mut test_future = pin!(async {
-            runtime
-                .new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall)
-                .await?;
+        let strong_builder = futures::upgrade(async {
             runtime
                 .new_pending_future(PtraceFutureTypes::WaitForSignal)
                 .await?;
-            Ok::<i32, AsyncRuntimeError>(42)
+            Ok::<i32, AsyncRuntimeError>(100)
         });
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(runtime._has_new_blockage());
+        let mut strong_pinned = pin!(strong_builder);
 
-        // Unblock an irrelevant future
-        let event1 = PtraceStatus {};
-        runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event1);
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
+        // Creating a RAII scope to make sure we can later do: strong_pinned.as_mut()
+        {
+            let mut test_future = pin!(async {
+                let weak_wrapper = futures_lite::future::zip(
+                    async {
+                        let guard1 = futures::downgrade(strong_pinned.as_ref()).await;
+                        match guard1.as_ref() {
+                            Ok(val1) => Ok::<i32, AsyncRuntimeError>(val1 * 5),
+                            Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
+                        }
+                    },
+                    async {
+                        let guard2 = futures::downgrade(strong_pinned.as_ref()).await;
+                        match guard2.as_ref() {
+                            Ok(val2) => Ok::<i32, AsyncRuntimeError>(val2 * 6),
+                            Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
+                        }
+                    },
+                );
+                let (result1, result2) = strong_pinned.as_ref().build(weak_wrapper).await;
+                Ok::<i32, AsyncRuntimeError>(result1? + result2?)
+            });
+
+            assert_eq!(runtime.run_async_step(&mut test_future), None);
+            assert!(runtime._has_new_blockage());
+            assert_eq!(runtime._pending_futures_size(), 1);
+            _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
+
+            // Unblock the future
+            let event = PtraceStatus {};
+            runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event.clone());
+            let output = runtime.run_async_step(&mut test_future);
+
+            assert_eq!(runtime._pending_futures_size(), 0);
+            assert_eq!(
+                strong_pinned.as_ref().result.borrow().clone(),
+                Some(Ok(100))
+            );
+            assert_eq!(output, Some(Ok(1100)));
+        }
+
+        assert_eq!(strong_pinned.as_mut().take_result(), Ok(100));
         assert!(!runtime._has_new_blockage());
-
-        // Unblock the first future
-        let event2 = PtraceStatus {};
-        runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event2.clone());
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(runtime._has_new_blockage());
-
-        // Unblock the second future (ignoring the first irrelevant unblock for WaitForSignal)
-        let event3 = PtraceStatus {};
-        runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event3.clone());
-        let output = runtime.run_async_step(&mut test_future);
-        assert_eq!(output, Some(Ok(42)));
-        assert!(!runtime._has_new_blockage());
-    }
-
-    #[test]
-    fn test_compatible_with_futures_lite_zip_in_order() {
-        let runtime = PtraceAsyncRuntime::new();
-        let mut test_future = pin!(futures_lite::future::zip(
-            runtime.new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall),
-            runtime.new_pending_future(PtraceFutureTypes::WaitForSignal),
-        ));
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(runtime._has_new_blockage());
-
-        // Unblock the first future
-        let event2 = PtraceStatus {};
-        runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event2.clone());
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(!runtime._has_new_blockage());
-
-        // Unblock the second future
-        let event3 = PtraceStatus {};
-        runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event3.clone());
-        let (output1, output2) = runtime.run_async_step(&mut test_future).unwrap();
-        assert_eq!(output1, Ok(event2));
-        assert_eq!(output2, Ok(event3));
-        assert!(!runtime._has_new_blockage());
-    }
-
-    #[test]
-    fn test_compatible_with_futures_lite_zip_in_reversed_order() {
-        let runtime = PtraceAsyncRuntime::new();
-        let mut test_future = pin!(futures_lite::future::zip(
-            runtime.new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall),
-            runtime.new_pending_future(PtraceFutureTypes::WaitForSignal),
-        ));
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(runtime._has_new_blockage());
-
-        // Unblock the second future
-        let event2 = PtraceStatus {};
-        runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event2.clone());
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(!runtime._has_new_blockage());
-
-        // Unblock the first future
-        let event3 = PtraceStatus {};
-        runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event3.clone());
-        let (output1, output2) = runtime.run_async_step(&mut test_future).unwrap();
-        assert_eq!(output1, Ok(event3));
-        assert_eq!(output2, Ok(event2));
-        assert!(!runtime._has_new_blockage());
-    }
-
-    #[test]
-    fn test_compatible_with_futures_lite_or_resolves_first() {
-        let runtime = PtraceAsyncRuntime::new();
-        let mut test_future = pin!(futures_lite::future::or(
-            async {
-                runtime
-                    .new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall)
-                    .await?;
-                Ok::<i32, AsyncRuntimeError>(234)
-            },
-            async {
-                runtime
-                    .new_pending_future(PtraceFutureTypes::WaitForSignal)
-                    .await?;
-                Ok::<i32, AsyncRuntimeError>(456)
-            },
-        ));
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(runtime._has_new_blockage());
-        assert_eq!(runtime._pending_futures_size(), 2);
-        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
-        _assert_one_pending_at(&runtime, 1, PtraceFutureTypes::WaitForSignal);
-
-        // Unblock the first future
-        let event = PtraceStatus {};
-        runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event.clone());
-        assert_eq!(runtime._pending_futures_size(), 2);
-        let output = runtime.run_async_step(&mut test_future);
-        assert_eq!(runtime._pending_futures_size(), 1);
-        assert_eq!(output, Some(Ok(234)));
-        assert!(!runtime._has_new_blockage());
-    }
-
-    #[test]
-    fn test_compatible_with_futures_lite_or_resolves_second() {
-        let runtime = PtraceAsyncRuntime::new();
-        let mut test_future = pin!(futures_lite::future::or(
-            async {
-                runtime
-                    .new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall)
-                    .await?;
-                Ok::<i32, AsyncRuntimeError>(234)
-            },
-            async {
-                runtime
-                    .new_pending_future(PtraceFutureTypes::WaitForSignal)
-                    .await?;
-                Ok::<i32, AsyncRuntimeError>(456)
-            },
-        ));
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(runtime._has_new_blockage());
-        assert_eq!(runtime._pending_futures_size(), 2);
-        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
-        _assert_one_pending_at(&runtime, 1, PtraceFutureTypes::WaitForSignal);
-
-        // Unblock the second future
-        let event = PtraceStatus {};
-        runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event.clone());
-        assert_eq!(runtime._pending_futures_size(), 2);
-        let output = runtime.run_async_step(&mut test_future);
-        assert_eq!(runtime._pending_futures_size(), 1);
-        _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
-        assert_eq!(output, Some(Ok(456)));
-        assert!(!runtime._has_new_blockage());
-    }
-
-    async fn _future_with_waker(runtime: &PtraceAsyncRuntime) -> Result<(), AsyncRuntimeError> {
-        futures_lite::future::or(
-            async {
-                runtime
-                    .new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall)
-                    .await?;
-                futures_lite::future::yield_now().await;
-                Ok::<i32, AsyncRuntimeError>(234)
-            },
-            async {
-                runtime
-                    .new_pending_future(PtraceFutureTypes::WaitForSignal)
-                    .await?;
-                Ok::<i32, AsyncRuntimeError>(456)
-            },
-        )
-        .await?;
-        Ok(())
-    }
-
-    #[test]
-    fn test_incompatible_with_waker_such_as_futures_lite_yield_now_step1() {
-        // futures_lite::future::yield_now() uses a Waker.
-        let runtime = PtraceAsyncRuntime::new();
-        let mut test_future = pin!(_future_with_waker(&runtime));
-
-        // Run the first async step, which should not panic
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(runtime._has_new_blockage());
-
-        // Unblock the first await
-        let event = PtraceStatus {};
-        runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event.clone());
     }
 
     #[test]
     #[should_panic(
-        expected = "Internal error, KRSM Async Runtime detected invalid usage of external async library"
+        expected = "StrongFuture should have completed before calling StrongWeakBuilder::take_result"
     )]
     fn test_incompatible_with_waker_such_as_futures_lite_yield_now_step2() {
-        // futures_lite::future::yield_now() uses a Waker.
         let runtime = PtraceAsyncRuntime::new();
-        let mut test_future = pin!(_future_with_waker(&runtime));
+        let strong_builder = futures::upgrade(async {
+            runtime
+                .new_pending_future(PtraceFutureTypes::WaitForSignal)
+                .await?;
+            Ok::<i32, AsyncRuntimeError>(100)
+        });
+        let mut strong_pinned = pin!(strong_builder);
 
-        // Run the first async step, which should not panic
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(runtime._has_new_blockage());
+        // Creating a RAII scope to make sure we can later do: strong_pinned.as_mut()
+        {
+            let mut test_future = pin!(async {
+                let weak_wrapper = async {
+                    let guard1 = futures::downgrade(strong_pinned.as_ref()).await;
+                    match guard1.as_ref() {
+                        Ok(val1) => Ok::<i32, AsyncRuntimeError>(val1 * 5),
+                        Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
+                    }
+                };
+                let result = strong_pinned.as_ref().build(weak_wrapper).await;
+                Ok::<i32, AsyncRuntimeError>(result?)
+            });
+            assert_eq!(runtime.run_async_step(&mut test_future), None);
+            assert!(runtime._has_new_blockage());
+            assert_eq!(runtime._pending_futures_size(), 1);
+            _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
+        }
 
-        // Unblock the first await
-        let event = PtraceStatus {};
-        runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event.clone());
+        let _ = strong_pinned.as_mut().take_result();
+    }
 
-        // Run the first async step, which should panic
-        let _ = runtime.run_async_step(&mut test_future);
+    #[test]
+    #[should_panic(
+        expected = "StrongFuture was polled after completion! Please make sure your weak_wrapper doesn't await on anything else."
+    )]
+    fn test_panics_if_weak_wrapper_awaits_too_much() {
+        let runtime = PtraceAsyncRuntime::new();
+        let strong_builder = futures::upgrade(async {
+            runtime
+                .new_pending_future(PtraceFutureTypes::WaitForPtraceSyscall)
+                .await?;
+            Ok::<i32, AsyncRuntimeError>(100)
+        });
+        let mut strong_pinned = pin!(strong_builder);
+        // Creating a RAII scope to make sure we can later do: strong_pinned.as_mut()
+        {
+            let mut test_future = pin!(async {
+                let weak_wrapper = async {
+                    let guard1 = futures::downgrade(strong_pinned.as_ref()).await;
+                    let _ = runtime
+                        .new_pending_future(PtraceFutureTypes::WaitForSignal)
+                        .await;
+                    match guard1.as_ref() {
+                        Ok(val1) => Ok::<i32, AsyncRuntimeError>(val1 * 5),
+                        Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
+                    }
+                };
+                let result = strong_pinned.as_ref().build(weak_wrapper).await;
+                Ok::<i32, AsyncRuntimeError>(result?)
+            });
+            assert_eq!(runtime.run_async_step(&mut test_future), None);
+            assert!(runtime._has_new_blockage());
+            assert_eq!(runtime._pending_futures_size(), 1);
+            _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForPtraceSyscall);
+            // Unblock the strong future
+            let event = PtraceStatus {};
+            runtime.unblock_futures(PtraceFutureTypes::WaitForPtraceSyscall, event.clone());
+            assert_eq!(runtime.run_async_step(&mut test_future), None);
+            assert_eq!(runtime._pending_futures_size(), 1);
+            _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
+            // Unblock the extra future
+            let event = PtraceStatus {};
+            runtime.unblock_futures(PtraceFutureTypes::WaitForSignal, event.clone());
+            let _ = runtime.run_async_step(&mut test_future);
+        }
+        let _ = strong_pinned.as_mut().take_result();
     }
 }

@@ -1,6 +1,6 @@
 # KRSM: KRSM Rust State Machine
 
-This crate is a `no_std`, single-threaded, async runner for pinned futures. It's barely an async runtime, because it:
+This crate provides a `no_std`, single-threaded, async runner for pinned futures: [AsyncRuntime]. But it's barely a real runtime, because it:
 
 * Requires you to pin the `Future`, and to manually poll it until completion.
 * Does not come with `I/O` libraries, or with direct access to system calls
@@ -49,6 +49,8 @@ assert_eq!(result, Ok(42));
 ```
 
 Unlike a generator, or a sans-io request/response channel, KRSM keeps several yields alive at the same time. Each one is tagged with a `YieldReason`, and the caller chooses exactly one to resume per polling step — which means KRSM allows the direct usage of both `futures_lite::future::or()` and `futures_lite::future::zip()`.
+
+[AsyncRuntime] is not designed to be shared across threads. However, if you need to make use of multi-threading for the non-asynchronous, I/O part of the program, please consider using [TaskTracker].
 
 
 ## Goal
