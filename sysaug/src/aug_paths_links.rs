@@ -35,7 +35,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         if let Some((_, i)) = syscall.creates_symlink {
             let i = i as usize;
             state.saved_path_idx(i, |path| {
-                self.save_metadata_for_file(path, |x| x.is_symlink = Some(true))?;
+                self.fs.save_metadata(path, |x| x.is_symlink = Some(true))?;
                 Ok(())
             })?;
         }
@@ -51,7 +51,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let Some((i, j)) = syscall.creates_hardlink else {
             return Ok(());
         };
-        let Some(metadir) = self.get_metadata_dir() else {
+        let Some(metadir) = self.fs.get_metadata_dir() else {
             return Ok(());
         };
 
@@ -74,7 +74,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
                 // First, move the metadata
                 std::fs::create_dir_all(&links_dir).map_err(SysAugError::CreateHardlinkIO)?;
-                if let Some(old_meta) = self.get_metadata_path(&path)? {
+                if let Some(old_meta) = self.fs.get_metadata_path(&path)? {
                     let _ = std::fs::rename(&old_meta, &new_meta)
                         .map_err(SysAugError::CreateHardlinkIO)
                         .map_err(display_err);
@@ -128,7 +128,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
         state.first_saved_path_mut(|pathbuf, i| {
             let path = pathbuf.as_path();
-            if let Some(meta) = self.read_metadata_for_file(path)?
+            if let Some(meta) = self.fs.read_metadata(path)?
                 && meta.hardlink_counter.is_some()
             {
                 // Resolve the actual path of the hardlink
@@ -160,7 +160,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let Some((i, j)) = syscall.renames_metadata else {
             return Ok(());
         };
-        let metadir = self.get_metadata_dir();
+        let metadir = self.fs.get_metadata_dir();
         let i = i as usize;
         let j = j as usize;
 
@@ -181,7 +181,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     state.set_skip_syscall(0);
                 } else if is_hardlink2 {
                     // Decrease reference counter by 1
-                    self.delete_metadata_for_file(path2.as_path())?;
+                    self.fs.delete_metadata(path2.as_path())?;
                 }
                 Ok(())
             })?;
@@ -213,8 +213,8 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         }
 
         state.saved_path_pair(i, j, |path1, path2| {
-            let path1 = self.get_metadata_path(path1.as_path())?;
-            let path2 = self.get_metadata_path(path2.as_path())?;
+            let path1 = self.fs.get_metadata_path(path1.as_path())?;
+            let path2 = self.fs.get_metadata_path(path2.as_path())?;
             if let (Some(path1), Some(path2)) = (path1, path2) {
                 std::fs::rename(path1, path2).map_err(SysAugError::RenameMetadata)?;
             }
@@ -224,7 +224,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     }
 
     fn increment_hardlink_counter(&self, path: &PathBuf) -> Result<(), SysAugError> {
-        self.save_metadata_for_file(path, |x| {
+        self.fs.save_metadata(path, |x| {
             if let Some(count) = x.hardlink_counter {
                 x.hardlink_counter = Some(count + 1);
             } else {

@@ -94,7 +94,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         }
 
         state.for_saved_path(|path| {
-            self.delete_metadata_for_file(path)?;
+            self.fs.delete_metadata(path)?;
             Ok(())
         })?;
         Ok(())
@@ -133,7 +133,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 new_owner,
                 new_group
             );
-            self.save_metadata_for_file(path, |x| {
+            self.fs.save_metadata(path, |x| {
                 x.chown_owner = Some(new_owner);
                 x.chown_group = Some(new_group);
             })?;
@@ -170,7 +170,8 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let new_mod = state.orig_args[*position as usize];
         state.for_saved_path(|path| {
             event!(Level::INFO, "Handling chmod: {:?}, {:b}", &path, new_mod);
-            self.save_metadata_for_file(path, |x| x.chmod = Some(new_mod & FILE_PERMS_MASK))?;
+            let new_mod = new_mod & FILE_PERMS_MASK;
+            self.fs.save_metadata(path, |x| x.chmod = Some(new_mod))?;
             Ok(())
         })?;
         Ok(())
@@ -210,7 +211,8 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let new_mod = state.orig_args[*perms_position as usize];
             state.for_saved_path(|path| {
                 event!(Level::INFO, "Handling chmod: {:?}, {:b}", &path, new_mod);
-                self.save_metadata_for_file(path, |x| x.chmod = Some(new_mod & FILE_PERMS_MASK))?;
+                let new_mod = new_mod & FILE_PERMS_MASK;
+                self.fs.save_metadata(path, |x| x.chmod = Some(new_mod))?;
                 Ok(())
             })?;
         }

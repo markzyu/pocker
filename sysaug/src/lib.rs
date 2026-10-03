@@ -11,7 +11,6 @@
 // GNU General Public License for more details.
 
 mod aug_clone;
-mod aug_common;
 mod aug_exec;
 mod aug_paths;
 mod aug_paths_common;
@@ -23,6 +22,7 @@ mod aug_seccomp;
 mod aug_waitpid;
 mod common;
 mod config;
+mod fs;
 mod handler_async;
 mod handler_sync;
 mod syscalls;

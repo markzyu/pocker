@@ -12,6 +12,7 @@
 
 use crate::common::{PTRACE_EVENT_SECCOMP, SysAugArgs, SysAugError, display_err, rwlock_read};
 use crate::config::{SysAugConfig, init_passthroughs_from_config, init_perms_ids_from_config};
+use crate::fs::FileSystem;
 use crate::handler_async::{AsyncNotifications, AsyncTraceeHandler};
 use krsm::AsyncYielder;
 use nix::sys;
@@ -181,6 +182,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> TraceeHandler<PtraceClient> {
 
     pub fn event_loop(self: &Arc<TraceeHandler<PtraceClient>>) -> Result<u8, SysAugError> {
         let pid = self.pid;
+        let consts = (*self.consts).clone();
 
         // Initialize and store async loops and futures
         let async_runtime = PtraceAsyncRuntime::new();
@@ -189,7 +191,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> TraceeHandler<PtraceClient> {
             pid: pid.clone(),
             shared_fd: self.shared_fd.clone(),
 
-            consts: (*self.consts).clone(),
+            consts: consts.clone(),
 
             parent: self.parent.clone(),
             sync_handler: Arc::downgrade(&self),
@@ -198,10 +200,9 @@ impl<PtraceClient: pocker_executor::PtraceClient> TraceeHandler<PtraceClient> {
 
             yielder_syscall: AsyncYielder::default(),
             notifiers: AsyncNotifications::default(),
+            fs: FileSystem::new(consts, pid),
 
             perms_ids: RefCell::default(),
-            path_prefix: RefCell::default(),
-            path_prefix_excludes: RefCell::default(),
 
             mmap_tracee_addr: RefCell::default(),
             tracee_stack_offset: RefCell::default(),
@@ -227,8 +228,8 @@ impl<PtraceClient: pocker_executor::PtraceClient> TraceeHandler<PtraceClient> {
         // Initialize async states from config json
         init_perms_ids_from_config(&async_handlers.perms_ids, &self.consts.config.perms)?;
         if self.consts.args.chroot.is_some() {
-            let mut path_prefix = async_handlers.path_prefix.borrow_mut();
-            let mut path_prefix_excludes = async_handlers.path_prefix_excludes.borrow_mut();
+            let mut path_prefix = async_handlers.fs.path_prefix.borrow_mut();
+            let mut path_prefix_excludes = async_handlers.fs.path_prefix_excludes.borrow_mut();
             init_passthroughs_from_config(&mut *path_prefix_excludes, &self.consts.config.rootfs);
             *path_prefix = self.consts.args.chroot.clone();
         }

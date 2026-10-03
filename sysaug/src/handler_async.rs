@@ -16,6 +16,7 @@ use crate::common::{
     display_err, rwlock_read,
 };
 use crate::config::PERMS_IDS_SIZE;
+use crate::fs::FileSystem;
 use crate::handler_sync::{TraceeHandler, TraceeHandlerConsts};
 use crate::syscalls::{BpfProgram, SECCOMP_FILTERS, SYSCALL_INSTRUCTION_SIZE, get_syscall};
 use krsm::AsyncYielder;
@@ -84,11 +85,11 @@ pub struct AsyncTraceeHandler<'a, PtraceClient: pocker_executor::PtraceClient> {
     pub yielder_syscall: AsyncYielder,
     /// Notify the outside, synchronous event loop about states from async
     pub notifiers: AsyncNotifications,
+    /// Helper functions related to rootfs, chroot, and metadata files
+    pub(crate) fs: FileSystem,
 
     // --------- Actual shared states that are owned by this Async loop ---------
     pub perms_ids: RefCell<[Option<usize>; PERMS_IDS_SIZE]>,
-    pub path_prefix: RefCell<Option<PathBuf>>,
-    pub path_prefix_excludes: RefCell<Vec<PathBuf>>,
 
     pub mmap_tracee_addr: RefCell<usize>,
     pub tracee_stack_offset: RefCell<usize>,

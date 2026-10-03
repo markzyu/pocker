@@ -69,7 +69,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     where
         T: IStat + Clone + Send + 'static,
     {
-        let Some(meta) = self.read_metadata_for_file(path)? else {
+        let Some(meta) = self.fs.read_metadata(path)? else {
             return Ok(());
         };
         let mem_helpers = get_mem_helper();

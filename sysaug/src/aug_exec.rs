@@ -11,6 +11,7 @@
 // GNU General Public License for more details.
 
 use crate::common::{PathAction, SysAugError, SyscallInfo};
+use crate::fs::path_from_bytes;
 use crate::handler_async::{AsyncTraceeHandler, get_mem_helper};
 use pocker_ptrace::{GenericPurposeRegs, MemHelpers, USIZE_SIZE};
 use std::io::{BufRead, Read, Seek};
@@ -71,10 +72,10 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let read_args = [regs.arg0, regs.arg1, regs.arg2, regs.arg3];
 
         // Translate elf path to real path
-        let elf_path_buf = Self::path_from_bytes(path_bytes)?;
+        let elf_path_buf = path_from_bytes(path_bytes)?;
         let mut new_elf_path = elf_path_buf.clone();
         {
-            let path_action = self.calc_real_path(&new_elf_path, syscall, &read_args)?;
+            let path_action = self.fs.calc_real_path(&new_elf_path, syscall, &read_args)?;
             if let Ok(stat) = nix::sys::stat::stat(&new_elf_path) {
                 let setuid = stat.st_mode & nix::sys::stat::Mode::S_ISUID.bits();
                 let setgid = stat.st_mode & nix::sys::stat::Mode::S_ISGID.bits();
@@ -117,8 +118,10 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 .map_err(SysAugError::ReadBin)?;
 
             // Calculate real path of interpreter (following all chroot rules)
-            let interp_path_buf = Self::path_from_bytes(buf)?;
-            let path_action = self.calc_real_path(&interp_path_buf, syscall, &read_args)?;
+            let interp_path_buf = path_from_bytes(buf)?;
+            let path_action = self
+                .fs
+                .calc_real_path(&interp_path_buf, syscall, &read_args)?;
 
             // Override final path of interpreter only if use_native_loader = false
             let mut final_interp_path = interp_path_buf;

@@ -12,6 +12,7 @@
 
 use crate::aug_paths_common::{AugmentState, StrongWeakBuilder, StrongWeakOutput};
 use crate::common::{PathAction, SysAugError, SyscallInfo};
+use crate::fs::path_from_bytes;
 use crate::handler_async::{AsyncTraceeHandler, get_mem_helper};
 use pocker_ptrace::{GenericPurposeRegs, read_bytes_to_structs, setregs, write_structs_to_tracee};
 use std::os::unix::ffi::OsStrExt;
@@ -79,9 +80,11 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         for entry in dirents.iter_mut() {
             event!(Level::TRACE, "Intercepting {:?}", entry);
             entry.normalize_type();
-            let orig_path_buf = Self::path_from_bytes(entry.get_name().to_vec())?;
+            let orig_path_buf = path_from_bytes(entry.get_name().to_vec())?;
             let orig_path: &Path = orig_path_buf.as_path();
-            let action = self.get_mod_path(syscall, orig_path, PathAction::None, true)?;
+            let action = self
+                .fs
+                .get_mod_path(syscall, orig_path, PathAction::None, true)?;
             let delete = match &action {
                 PathAction::Override(override_path) => {
                     let bytes = override_path.as_os_str().as_bytes();

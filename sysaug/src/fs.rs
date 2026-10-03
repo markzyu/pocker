@@ -10,8 +10,10 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
+use crate::TraceeHandlerConsts;
 use crate::common::{PathAction, RootFsMetadata, SysAugError, SyscallInfo, display_err};
-use crate::handler_async::AsyncTraceeHandler;
+use nix::unistd::Pid;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::Seek;
@@ -19,9 +21,25 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::{Component, Path, PathBuf};
 use tracing::{Level, event};
 
+pub struct FileSystem {
+    consts: TraceeHandlerConsts,
+    pub path_prefix: RefCell<Option<PathBuf>>,
+    pub path_prefix_excludes: RefCell<Vec<PathBuf>>,
+    pid: Pid,
+}
+
 // Common helper functions used by aug_*.rs
 // Calculate real path of file based on its path in rootfs
-impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceClient> {
+impl FileSystem {
+    pub fn new(consts: TraceeHandlerConsts, pid: Pid) -> Self {
+        Self {
+            consts,
+            path_prefix: RefCell::default(),
+            path_prefix_excludes: RefCell::default(),
+            pid: pid,
+        }
+    }
+
     // -----------------------------------------------------------------------------
     // ------------------------ RootFS Metadata (Perms, etc) -----------------------
     // -----------------------------------------------------------------------------
@@ -40,7 +58,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(maybe_meta_path)
     }
 
-    pub fn save_metadata_for_file<T>(
+    pub fn save_metadata<T>(
         &self,
         path: &Path,
         update_fn: impl FnOnce(&mut RootFsMetadata) -> T,
@@ -87,10 +105,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(result)
     }
 
-    pub fn read_metadata_for_file(
-        &self,
-        path: &Path,
-    ) -> Result<Option<RootFsMetadata>, SysAugError> {
+    pub fn read_metadata(&self, path: &Path) -> Result<Option<RootFsMetadata>, SysAugError> {
         if self.consts.args.rootfs.is_none() {
             return Ok(None);
         }
@@ -112,13 +127,13 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(None)
     }
 
-    pub fn delete_metadata_for_file(&self, path: &Path) -> Result<(), SysAugError> {
+    pub fn delete_metadata(&self, path: &Path) -> Result<(), SysAugError> {
         if self.consts.args.rootfs.is_none() {
             return Ok(());
         }
         if let Some(meta_path) = self.get_metadata_path(path)? {
             // First, consider hardlink counter
-            let should_keep = self.save_metadata_for_file(path, |x| {
+            let should_keep = self.save_metadata(path, |x| {
                 if let Some(val) = x.hardlink_counter
                     && val > 1
                 {
@@ -244,7 +259,23 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     // ------------------------ Path Modifications (Chroot) ------------------------
     // -----------------------------------------------------------------------------
 
-    pub fn calc_real_path_simple(
+    pub fn calc_real_path(
+        &self,
+        orig_path: &Path,
+        syscall: &SyscallInfo,
+        args: &[usize],
+    ) -> Result<PathAction, SysAugError> {
+        let result = self.calc_real_path_recurse(orig_path, syscall, HashSet::new(), args)?;
+        event!(
+            Level::DEBUG,
+            "Following symlink {:?} -> {:?}",
+            orig_path,
+            &result
+        );
+        Ok(result)
+    }
+
+    fn calc_real_path_simple(
         &self,
         orig_path: &Path,
         syscall: &SyscallInfo,
@@ -265,7 +296,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     }
 
     // Calculate real path of file + following symlinks that use fake paths
-    pub fn calc_real_path_recurse(
+    fn calc_real_path_recurse(
         &self,
         orig_path: &Path,
         syscall: &SyscallInfo,
@@ -316,7 +347,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     }
 
     /// Follow only one layer of symlink without doing translations (Returns Ok(Err(true)) if loop)
-    pub fn calc_follow_symlink(
+    fn calc_follow_symlink(
         &self,
         real_path: &PathBuf,
         syscall: &SyscallInfo,
@@ -371,23 +402,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(None)
     }
 
-    // Same as calc_real_path_recurse
-    pub fn calc_real_path(
-        &self,
-        orig_path: &Path,
-        syscall: &SyscallInfo,
-        args: &[usize],
-    ) -> Result<PathAction, SysAugError> {
-        let result = self.calc_real_path_recurse(orig_path, syscall, HashSet::new(), args)?;
-        event!(
-            Level::DEBUG,
-            "Following symlink {:?} -> {:?}",
-            orig_path,
-            &result
-        );
-        Ok(result)
-    }
-
     // There are SysAugConfig configurations that can "modify" a guest/host path. This function applies them.
     // reverse: false = generating real paths on disk, true = generating fake paths from container
     // perspective
@@ -425,12 +439,32 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         }
         Ok(initial_override)
     }
+}
 
-    pub fn path_from_bytes(mut path_bytes: Vec<u8>) -> Result<PathBuf, SysAugError> {
-        while path_bytes.last() == Some(&0) {
-            path_bytes.pop();
+pub fn path_from_bytes(mut path_bytes: Vec<u8>) -> Result<PathBuf, SysAugError> {
+    while path_bytes.last() == Some(&0) {
+        path_bytes.pop();
+    }
+    let path_osstr: OsString = OsStringExt::from_vec(path_bytes);
+    Ok(path_osstr.into())
+}
+
+#[cfg(test)]
+mod tests {
+    fn setup() {
+        let err = "Failed to setup tests";
+        let staging_dir: PathBuf = PathBuf::from("tests/fixtures/staging");
+        let dir = staging_dir.as_path();
+        if dir.exists() {
+            std::fs::remove_dir_all(dir).expect(err);
         }
-        let path_osstr: OsString = OsStringExt::from_vec(path_bytes);
-        Ok(path_osstr.into())
+        std::fs::create_dir_all(dir).expect(err);
+        std::fs::write(dir.join("x"), "123").expect(err);
+        std::os::unix::fs::symlink(dir.join("x"), dir.join("y")).expect(err);
+    }
+
+    #[test]
+    fn test_calc_real_path_on_rootfs() {
+        setup();
     }
 }

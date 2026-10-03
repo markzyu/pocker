@@ -11,6 +11,7 @@
 // GNU General Public License for more details.
 
 use crate::common::{PathAction, SysAugError, SyscallInfo};
+use crate::fs::path_from_bytes;
 use crate::handler_async::{AsyncTraceeHandler, get_mem_helper};
 use pocker_ptrace::{GenericPurposeRegs, MemHelpers, setregs};
 use std::cell::RefCell;
@@ -83,10 +84,12 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             // TODO: This can cause buffer overflow if tracee is malicious.
             let path_bytes =
                 ptrace_client.execute(move || (read_bytes_until_zero)(pid, arg_i))??;
-            let orig_path_buf = Self::path_from_bytes(path_bytes)?;
+            let orig_path_buf = path_from_bytes(path_bytes)?;
 
             // Calculate path_action, and maybe update tracee
-            let path_action = self.calc_real_path(&orig_path_buf, syscall, &orig_args)?;
+            let path_action = self
+                .fs
+                .calc_real_path(&orig_path_buf, syscall, &orig_args)?;
 
             let final_path = match path_action {
                 PathAction::Override(new_path_val) => {
