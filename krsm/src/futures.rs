@@ -47,13 +47,17 @@ pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
 /// The "strong-weak" naming is meant to highlight the borrow relationship between the two.
 /// But another name for this pair could be "timing-data":
 ///
-/// * The [StrongFuture] holds ownership of the original future, and drives it execution.
+/// * The [StrongFuture] owns the timing of the original future, and drives it execution.
 /// * The [WeakFuture] holds a readonly reference to the `Future::Output` data of the original future
 ///
 /// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
 /// the same future across many `futures_lite::future::zip()` branches.
+/// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`.
 ///
-/// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`
+/// But, to fully execute everything, you must zip this `weak_wrapper` again with the [StrongFuture],
+/// in this specific order:
+///
+/// `futures_lite::future::zip(weak_wrapper, pinned_strong_builder.as_ref().build())`
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct StrongFuture<'a, T, F: Future<Output = T>> {
     result: &'a RefCell<Option<T>>,
@@ -76,13 +80,17 @@ pub struct StrongFuture<'a, T, F: Future<Output = T>> {
 /// The "strong-weak" naming is meant to highlight the borrow relationship between the two.
 /// But another name for this pair could be "timing-data":
 ///
-/// * The [StrongFuture] holds ownership of the original future, and drives it execution.
+/// * The [StrongFuture] owns the timing of the original future, and drives it execution.
 /// * The [WeakFuture] holds a readonly reference to the `Future::Output` data of the original future
 ///
 /// This "strong-weak" arrangement is helpful if you ever need to duplicate access to
 /// the same future across many `futures_lite::future::zip()` branches.
+/// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`.
 ///
-/// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`
+/// But, to fully execute everything, you must zip this `weak_wrapper` again with the [StrongFuture],
+/// in this specific order:
+///
+/// `futures_lite::future::zip(weak_wrapper, pinned_strong_builder.as_ref().build())`
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct WeakFuture<'a, T> {
     result: &'a RefCell<Option<T>>,
@@ -170,18 +178,23 @@ where
 
 /// Upgrades any future to obtain a [StrongWeakBuilder], which builds a [StrongFuture]
 ///
-/// Caveat: This [StrongFuture] consumes your original future. This means two things:
+/// Caveat: This [StrongFuture] consumes your original future. This means three things:
 ///
 /// 1. You **must** await on [StrongWeakBuilder::build]. Otherwise, the original future won't run at all.
 /// 2. You **must** create a [WeakFuture] to obtain access to the resulting data.
+/// 3. You **must** pin this [StrongWeakBuilder], and thus avoid moving the future stored in it.
 ///
-/// Why?
+/// Why would anyone want this?
 ///
 /// This strong-weak execution model helps if you need multiple "Weak" references to
 /// the same future, so that different handling logics can blend together, using a
 /// `futures_lite::future::zip()` call.
+/// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`.
 ///
-/// The zipped future is called a `weak_wrapper`.
+/// **Caveat**: To fully execute everything, you must zip this `weak_wrapper` again with the [StrongFuture],
+/// in this specific order:
+///
+/// `futures_lite::future::zip(weak_wrapper, pinned_strong_builder.as_ref().build())`
 pub fn upgrade<'a, T, F>(future: F) -> StrongWeakBuilder<T, F>
 where
     F: Future<Output = T>,
@@ -209,11 +222,12 @@ where
 }
 
 impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
-    /// This function allows you to pass [WeakFuture] instances to async wrapper functions,
-    /// as a `weak_wrapper` future, which can be, for example: `futures_lite::future::zip()`
+    /// This function will build a [StrongFuture] which runs the actual, original future.
     ///
-    /// This function will build a [StrongFuture] which runs the resulting `weak_wrapper` future,
-    /// as well as the original future that was consumed by [upgrade].
+    /// To fully execute everything, you must zip your `weak_wrapper` future with this strong
+    /// future, in this specific order:
+    ///
+    /// `futures_lite::future::zip(weak_wrapper, pinned_strong_builder.as_ref().build())`
     pub fn build<'a>(self: Pin<&'a Self>) -> StrongFuture<'a, T, F>
     where
         F: Future<Output = T>,
@@ -276,7 +290,7 @@ mod tests {
         });
         let mut strong_pinned = pin!(strong_builder);
 
-        // Creating a RAII scope to make sure we can later do: strong_pinner.as_mut()
+        // Creating a RAII scope to make sure we can later do: strong_pinned.as_mut()
         {
             let mut test_future = pin!(async {
                 let weak_wrapper = futures_lite::future::zip(
@@ -336,7 +350,7 @@ mod tests {
         });
         let mut strong_pinned = pin!(strong_builder);
 
-        // Creating a RAII scope to make sure we can later do: strong_pinner.as_mut()
+        // Creating a RAII scope to make sure we can later do: strong_pinned.as_mut()
         {
             let mut test_future = pin!(async {
                 let weak_wrapper = async {

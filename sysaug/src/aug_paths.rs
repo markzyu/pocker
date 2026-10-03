@@ -417,7 +417,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let future_builder = krsm::upgrade(syscall_future);
         let mut builder_pinned = pin!(future_builder);
 
-        // Creating a RAII scope to make sure we can later do: strong_pinner.as_mut()
+        // Creating a RAII scope to make sure we can later do: strong_pinned.as_mut()
         {
             let weak_future = futures_lite::future::zip(
                 futures_lite::future::zip(
