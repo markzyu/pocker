@@ -157,6 +157,7 @@ fn clone<T: Clone>(cell: &RefCell<T>) -> T {
 }
 
 impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceClient> {
+    // Parse register upon syscall-entry, into aug_path::AugmentState
     async fn augment_sys_paths_new_state(
         &self,
         entry_regs: GenericPurposeRegs,
@@ -236,6 +237,19 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 }
             }
         }
+
+        // Handle filefd_position (This overwrites all other save_paths)
+        if let Some(position) = syscall.filefd_position {
+            let position = position as usize;
+            let fd = orig_args[position] as isize;
+            let fd_path = pocker_procfs::getfd_path(pid, fd)?.unwrap_or("".into());
+            event!(Level::INFO, "filefd path {:?}", &fd_path);
+
+            // There is no need to calc_real_path, and no need to update register,
+            // because pocker cannot override real fds
+            save_paths[position].replace(fd_path);
+        }
+
         Ok(AugmentState {
             entry_regs: RefCell::new(entry_regs),
             orig_args,
@@ -259,22 +273,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         if let Some(retval) = clone(&state.need_skip_syscall) {
             self.do_skip_syscall(retval).await?;
             return Ok(());
-        }
-
-        // Handle filefd_position (This overwrites all other save_paths)
-        if let Some(position) = syscall.filefd_position {
-            let fd = state.orig_args[position as usize] as isize;
-            let fd_path = pocker_procfs::getfd_path(pid, fd)?.unwrap_or("".into());
-            event!(Level::INFO, "filefd path {:?}", &fd_path);
-
-            // There is no need to calc_real_path, and no need to update register,
-            // because pocker cannot override real fds
-            state.save_path_without_writing(0, fd_path);
-        }
-
-        // Handle getdents (make the buffer seem smaller)
-        if syscall.getdents_bits.is_some() {
-            state.update_arg(2, |v| v / 2);
         }
 
         // Delete metadata before unlink & rmdir
@@ -306,56 +304,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     return Ok(true);
                 }
                 Ok(false)
-            })?;
-        }
-
-        // Create hardlinks by (1) moving the original file (2) creating two symlinks (3) skip system call
-        if let Some((i, j)) = syscall.creates_hardlink
-            && let Some(metadir) = self.get_metadata_dir()
-        {
-            let i = i as usize;
-            let j = j as usize;
-            state.saved_path_pair(i, j, |path, result_path| {
-                let path = path.canonicalize().map_err(SysAugError::CreateHardlinkIO)?;
-                if !path.exists() {
-                    return Ok(());
-                }
-
-                let target_path = if path.starts_with(&metadir) {
-                    path.clone()
-                } else {
-                    let links_dir = metadir.join("links");
-                    let uuid = uuid::Uuid::new_v4().to_string();
-                    let new_meta = links_dir.join(format!("{}.json", &uuid));
-                    let target_path = links_dir.join(uuid);
-
-                    // First, move the metadata
-                    std::fs::create_dir_all(&links_dir).map_err(SysAugError::CreateHardlinkIO)?;
-                    if let Some(old_meta) = self.get_metadata_path(&path)? {
-                        let _ = std::fs::rename(&old_meta, &new_meta)
-                            .map_err(SysAugError::CreateHardlinkIO)
-                            .map_err(display_err);
-                    };
-
-                    // Then, move the link content
-                    std::fs::rename(&path, &target_path).map_err(SysAugError::CreateHardlinkIO)?;
-
-                    // Then, setup symlinks
-                    symlink(&target_path, &path).map_err(SysAugError::CreateHardlinkIO)?;
-                    self.increment_hardlink_counter(&path)?;
-                    target_path
-                };
-
-                let rootfs_path = self.consts.args.rootfs.as_ref().unwrap();
-                if !result_path.starts_with(rootfs_path) {
-                    state.set_skip_syscall(EACCES);
-                } else if result_path.exists() {
-                    state.set_skip_syscall(EEXIST);
-                } else {
-                    symlink(&target_path, result_path).map_err(SysAugError::CreateHardlinkIO)?;
-                    state.set_skip_syscall(0);
-                }
-                Ok(())
             })?;
         }
 
@@ -398,7 +346,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
         // Creating a RAII scope to make sure we can later do: strong_pinned.as_mut()
         {
-            let weak_future = futures_lite::future::try_zip(
+            let weak_group1 = futures_lite::future::try_zip(
                 futures_lite::future::try_zip(
                     self.augment_chmod(builder_pinned.as_ref(), syscall, &state),
                     self.augment_chmod_on_creation(builder_pinned.as_ref(), syscall, &state),
@@ -408,6 +356,14 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     self.augment_rename(builder_pinned.as_ref(), syscall, &state),
                 ),
             );
+            let weak_group2 = futures_lite::future::try_zip(
+                futures_lite::future::try_zip(
+                    self.augment_symlink_creation(builder_pinned.as_ref(), syscall, &state),
+                    self.augment_hardlink_creation(builder_pinned.as_ref(), syscall, &state),
+                ),
+                self.augment_getdents(builder_pinned.as_ref(), syscall, &state),
+            );
+            let weak_future = futures_lite::future::try_zip(weak_group1, weak_group2);
             let strong_future = builder_pinned.as_ref().build();
             let (result, _) = futures_lite::future::zip(weak_future, strong_future).await;
             if let Err(Some(e)) = result {
@@ -415,7 +371,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             }
         }
 
-        let (regs, retval) = builder_pinned.as_mut().take_result()?;
+        let (_, retval) = builder_pinned.as_mut().take_result()?;
         if retval < 0 {
             return Ok(());
         }
@@ -425,13 +381,33 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let save_paths = state.save_paths.borrow();
             self.on_stat_syscall_exit(syscall, orig_args, &*save_paths)
                 .await?;
-            self.on_link_syscall_exit(syscall, orig_args, &*save_paths)?;
+        }
+        Ok(())
+    }
+
+    async fn augment_getdents<F: Future<Output = StrongWeakOutput>>(
+        &self,
+        future_builder: Pin<&StrongWeakBuilder<F>>,
+        syscall: &SyscallInfo,
+        state: &AugmentState,
+    ) -> Result<(), Option<SysAugError>> {
+        // Before system call, make the buffer seem smaller
+        if syscall.getdents_bits.is_some() {
+            state.update_arg(2, |v| v / 2);
         }
 
-        if retval == 0 {
+        // Resume system call, and drop the WeakFutureGuard
+        let (regs, retval) = {
+            let guard = krsm::downgrade(future_builder).await;
+            let (regs, retval) = guard.as_ref().or(Err(None))?;
+            (regs.clone(), *retval)
+        };
+
+        if retval <= 0 {
             return Ok(());
         }
 
+        // After system call, replace results
         match syscall.getdents_bits {
             Some(32) => {
                 self.replace_getdents_result::<Dirent>(syscall, regs)
@@ -521,25 +497,97 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(())
     }
 
-    /// handles both symlinks and hardlinks
-    fn on_link_syscall_exit(
+    async fn augment_symlink_creation<F: Future<Output = StrongWeakOutput>>(
         &self,
+        future_builder: Pin<&StrongWeakBuilder<F>>,
         syscall: &SyscallInfo,
-        _args: &[usize],
-        save_paths: &[Option<PathBuf>],
-    ) -> Result<(), SysAugError> {
+        state: &AugmentState,
+    ) -> Result<(), Option<SysAugError>> {
+        // Wait for system call
+        let _ = krsm::downgrade(future_builder).await;
+
+        // After system call
         if let Some((_, i)) = syscall.creates_symlink {
             let i = i as usize;
-            if let Some(path) = save_paths[i].as_ref() {
+            state.saved_path_idx(i, |path| {
                 self.save_metadata_for_file(path, |x| x.is_symlink = Some(true))?;
-            }
+                Ok(())
+            })?;
         }
-        if let Some((_, i)) = syscall.creates_hardlink {
-            let i = i as usize;
-            if let Some(path) = save_paths[i].as_ref() {
-                self.increment_hardlink_counter(path)?;
+        Ok(())
+    }
+
+    async fn augment_hardlink_creation<F: Future<Output = StrongWeakOutput>>(
+        &self,
+        future_builder: Pin<&StrongWeakBuilder<F>>,
+        syscall: &SyscallInfo,
+        state: &AugmentState,
+    ) -> Result<(), Option<SysAugError>> {
+        let Some((i, j)) = syscall.creates_hardlink else {
+            return Ok(());
+        };
+        let Some(metadir) = self.get_metadata_dir() else {
+            return Ok(());
+        };
+
+        // Create hardlinks by (1) moving the original file (2) creating two symlinks (3) skip system call
+        let i = i as usize;
+        let j = j as usize;
+        state.saved_path_pair(i, j, |path, result_path| {
+            let path = path.canonicalize().map_err(SysAugError::CreateHardlinkIO)?;
+            if !path.exists() {
+                return Ok(());
             }
+
+            let target_path = if path.starts_with(&metadir) {
+                path.clone()
+            } else {
+                let links_dir = metadir.join("links");
+                let uuid = uuid::Uuid::new_v4().to_string();
+                let new_meta = links_dir.join(format!("{}.json", &uuid));
+                let target_path = links_dir.join(uuid);
+
+                // First, move the metadata
+                std::fs::create_dir_all(&links_dir).map_err(SysAugError::CreateHardlinkIO)?;
+                if let Some(old_meta) = self.get_metadata_path(&path)? {
+                    let _ = std::fs::rename(&old_meta, &new_meta)
+                        .map_err(SysAugError::CreateHardlinkIO)
+                        .map_err(display_err);
+                };
+
+                // Then, move the link content
+                std::fs::rename(&path, &target_path).map_err(SysAugError::CreateHardlinkIO)?;
+
+                // Then, setup symlinks
+                symlink(&target_path, &path).map_err(SysAugError::CreateHardlinkIO)?;
+                self.increment_hardlink_counter(&path)?;
+                target_path
+            };
+
+            let rootfs_path = self.consts.args.rootfs.as_ref().unwrap();
+            if !result_path.starts_with(rootfs_path) {
+                state.set_skip_syscall(EACCES);
+            } else if result_path.exists() {
+                state.set_skip_syscall(EEXIST);
+            } else {
+                symlink(&target_path, result_path).map_err(SysAugError::CreateHardlinkIO)?;
+                state.set_skip_syscall(0);
+            }
+            Ok(())
+        })?;
+
+        // Resume system call, and drop the WeakFutureGuard
+        let retval = {
+            let guard = krsm::downgrade(future_builder).await;
+            guard.as_ref().or(Err(None))?.1
+        };
+
+        if retval < 0 {
+            return Ok(());
         }
+
+        // After system call.
+        state.saved_path_idx(j, |path| self.increment_hardlink_counter(path))?;
         Ok(())
     }
 
