@@ -36,7 +36,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         syscall: &SyscallInfo,
     ) -> Result<(), SysAugError> {
         let pid = self.pid;
-        if !self.expand_exec_with_parser(&mut regs, syscall).await? {
+        if !self.expand_exec_with_parser(&mut regs, syscall)? {
             self.do_skip_syscall(-libc::ENOENT as usize).await?;
             return Ok(());
         }
@@ -46,7 +46,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(())
     }
 
-    async fn expand_exec_with_parser(
+    fn expand_exec_with_parser(
         &self,
         regs: &mut GenericPurposeRegs,
         syscall: &SyscallInfo,
@@ -74,9 +74,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let elf_path_buf = Self::path_from_bytes(path_bytes)?;
         let mut new_elf_path = elf_path_buf.clone();
         {
-            let path_action = self
-                .calc_real_path(&new_elf_path, syscall, &read_args)
-                .await?;
+            let path_action = self.calc_real_path(&new_elf_path, syscall, &read_args)?;
             if let Ok(stat) = nix::sys::stat::stat(&new_elf_path) {
                 let setuid = stat.st_mode & nix::sys::stat::Mode::S_ISUID.bits();
                 let setgid = stat.st_mode & nix::sys::stat::Mode::S_ISGID.bits();
@@ -120,9 +118,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
             // Calculate real path of interpreter (following all chroot rules)
             let interp_path_buf = Self::path_from_bytes(buf)?;
-            let path_action = self
-                .calc_real_path(&interp_path_buf, syscall, &read_args)
-                .await?;
+            let path_action = self.calc_real_path(&interp_path_buf, syscall, &read_args)?;
 
             // Override final path of interpreter only if use_native_loader = false
             let mut final_interp_path = interp_path_buf;
@@ -222,7 +218,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let new_argv_addr = self.tracee_stack_append(new_argv)?;
             regs.arg0 = interp_addr;
             regs.arg1 = new_argv_addr;
-            return Box::pin(self.expand_exec_with_parser(regs, syscall)).await;
+            return self.expand_exec_with_parser(regs, syscall);
         }
         event!(
             Level::ERROR,

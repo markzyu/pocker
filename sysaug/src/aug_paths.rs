@@ -57,7 +57,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     ) -> Result<(), SysAugError> {
         let pid = self.pid;
         let ptrace_client = &self.ptrace_client;
-        let state = self._aug_paths_do_parse_state(orig_regs, syscall).await?;
+        let state = self._aug_paths_do_parse_state(orig_regs, syscall)?;
 
         // If we already need to skip system call, then, skip it. (it's an ELOOP)
         let maybe_skip_syscall_retval = { *state.need_skip_syscall.borrow() };
@@ -136,7 +136,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     }
 
     // Parse register upon syscall-entry, into aug_path::AugmentState
-    async fn _aug_paths_do_parse_state(
+    fn _aug_paths_do_parse_state(
         &self,
         entry_regs: GenericPurposeRegs,
         syscall: &SyscallInfo,
@@ -179,9 +179,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let orig_path_buf = Self::path_from_bytes(path_bytes)?;
 
             // Calculate path_action, and maybe update tracee
-            let path_action = self
-                .calc_real_path(&orig_path_buf, syscall, &orig_args)
-                .await?;
+            let path_action = self.calc_real_path(&orig_path_buf, syscall, &orig_args)?;
 
             let final_path = match path_action {
                 PathAction::Override(new_path_val) => {
@@ -715,9 +713,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             entry.normalize_type();
             let orig_path_buf = Self::path_from_bytes(entry.get_name().to_vec())?;
             let orig_path: &Path = orig_path_buf.as_path();
-            let action = self
-                .get_mod_path(syscall, orig_path, PathAction::None, true)
-                .await?;
+            let action = self.get_mod_path(syscall, orig_path, PathAction::None, true)?;
             let delete = match &action {
                 PathAction::Override(override_path) => {
                     let bytes = override_path.as_os_str().as_bytes();
