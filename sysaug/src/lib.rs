@@ -13,6 +13,10 @@
 mod aug_clone;
 mod aug_common;
 mod aug_exec;
+mod aug_paths_common;
+mod aug_paths_getdents;
+mod aug_paths_links;
+mod aug_paths_stat;
 mod aug_paths;
 mod aug_perms;
 mod aug_seccomp;
