@@ -10,13 +10,11 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
-use crate::aug_paths_common::{AugmentState, StrongWeakBuilder, StrongWeakOutput, FILE_PERMS_MASK};
+use crate::PermType;
+use crate::aug_paths_common::{AugmentState, FILE_PERMS_MASK, StrongWeakBuilder, StrongWeakOutput};
 use crate::common::{SysAugError, SyscallInfo};
 use crate::handler_async::AsyncTraceeHandler;
-use crate::PermType;
-use pocker_ptrace::{
-    GenericPurposeRegs, getregs
-};
+use pocker_ptrace::{GenericPurposeRegs, getregs};
 use std::pin::{Pin, pin};
 use tracing::{Level, event};
 

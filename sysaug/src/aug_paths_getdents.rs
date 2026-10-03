@@ -13,10 +13,7 @@
 use crate::aug_paths_common::{AugmentState, StrongWeakBuilder, StrongWeakOutput};
 use crate::common::{PathAction, SysAugError, SyscallInfo};
 use crate::handler_async::{AsyncTraceeHandler, get_mem_helper};
-use pocker_ptrace::{
-    GenericPurposeRegs, read_bytes_to_structs,
-    setregs, write_structs_to_tracee,
-};
+use pocker_ptrace::{GenericPurposeRegs, read_bytes_to_structs, setregs, write_structs_to_tracee};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::pin::Pin;

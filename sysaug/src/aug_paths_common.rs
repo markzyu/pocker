@@ -139,7 +139,10 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         })
     }
 
-    pub(crate) fn _aug_paths_do_write_registers(&self, state: &AugmentState) -> Result<(), SysAugError> {
+    pub(crate) fn _aug_paths_do_write_registers(
+        &self,
+        state: &AugmentState,
+    ) -> Result<(), SysAugError> {
         let pid = self.pid;
         let ptrace_client = &self.ptrace_client;
 

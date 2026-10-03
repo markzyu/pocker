@@ -12,8 +12,8 @@
 
 use crate::aug_paths_common::{AugmentState, StrongWeakBuilder, StrongWeakOutput};
 use crate::common::{SysAugError, SyscallInfo};
-use crate::handler_async::AsyncTraceeHandler;
 use crate::display_err;
+use crate::handler_async::AsyncTraceeHandler;
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::pin::Pin;
