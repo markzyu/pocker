@@ -451,20 +451,60 @@ pub fn path_from_bytes(mut path_bytes: Vec<u8>) -> Result<PathBuf, SysAugError> 
 
 #[cfg(test)]
 mod tests {
-    fn setup() {
+    use crate::syscalls::get_syscall;
+
+use super::*;
+
+    // returns (fs, absolute path of staging dir / of rootfs)
+    fn setup() -> (FileSystem, PathBuf) {
         let err = "Failed to setup tests";
-        let staging_dir: PathBuf = PathBuf::from("tests/fixtures/staging");
+        let staging_dir: PathBuf = PathBuf::from("../tests/fixtures/staging");
         let dir = staging_dir.as_path();
         if dir.exists() {
             std::fs::remove_dir_all(dir).expect(err);
         }
         std::fs::create_dir_all(dir).expect(err);
         std::fs::write(dir.join("x"), "123").expect(err);
-        std::os::unix::fs::symlink(dir.join("x"), dir.join("y")).expect(err);
+
+        let err = "Failed to setup tests";
+        let staging_absolute = dir.canonicalize().expect(err);
+        let fs = FileSystem {
+            consts: TraceeHandlerConsts::default(),
+            path_prefix: RefCell::new(Some(staging_absolute.clone())),
+            path_prefix_excludes: RefCell::new(vec![]),
+            pid: Pid::this()
+        };
+        (fs, staging_absolute)
     }
 
     #[test]
     fn test_calc_real_path_on_rootfs() {
-        setup();
+        let (fs, dir) = setup();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        let err = "Failed to setup tests";
+        std::os::unix::fs::symlink("/x", dir.join("y")).expect(err);
+
+        let path1 = PathBuf::from("/y");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans1, PathAction::Override(dir.join("x")));
+    }
+
+    #[test]
+    fn test_calc_real_path_of_link_to_host_path_would_double_wrap() {
+        let (fs, dir) = setup();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        let err = "Failed to setup tests";
+        std::os::unix::fs::symlink(dir.join("x"), dir.join("y")).expect(err);
+
+        let dir_relative = dir.strip_prefix("/").expect(err);
+        let expected = dir.join(dir_relative).join("x");
+
+        let path1 = PathBuf::from("/y");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans1, PathAction::Override(expected));
     }
 }
