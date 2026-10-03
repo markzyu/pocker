@@ -364,8 +364,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 self.augment_getdents(builder_pinned.as_ref(), syscall, &state),
             );
             let weak_future = futures_lite::future::try_zip(weak_group1, weak_group2);
-            let strong_future = builder_pinned.as_ref().build();
-            let (result, _) = futures_lite::future::zip(weak_future, strong_future).await;
+            let result = builder_pinned.as_ref().build(weak_future).await;
             if let Err(Some(e)) = result {
                 return Err(e);
             }

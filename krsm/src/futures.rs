@@ -54,14 +54,14 @@ pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
 /// the same future across many `futures_lite::future::zip()` branches.
 /// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`.
 ///
-/// But, to fully execute everything, you must zip this `weak_wrapper` again with the [StrongFuture],
-/// in this specific order:
+/// But, to fully execute everything, you build a [StrongFuture] by passing your `weak_wrapper` future:
 ///
-/// `futures_lite::future::zip(weak_wrapper, pinned_strong_builder.as_ref().build())`
+/// `pinned_strong_builder.as_ref().build(weak_wrapper).await`
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct StrongFuture<'a, T, F: Future<Output = T>> {
+pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
     result: &'a RefCell<Option<T>>,
     timing: &'a RefCell<F>,
+    weak_wrapper: RefCell<F2>,
 }
 
 /// A weak future is like a borrowed reference to a [StrongFuture]. You can have as
@@ -87,10 +87,9 @@ pub struct StrongFuture<'a, T, F: Future<Output = T>> {
 /// the same future across many `futures_lite::future::zip()` branches.
 /// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`.
 ///
-/// But, to fully execute everything, you must zip this `weak_wrapper` again with the [StrongFuture],
-/// in this specific order:
+/// But, to fully execute everything, you build a [StrongFuture] by passing your `weak_wrapper` future:
 ///
-/// `futures_lite::future::zip(weak_wrapper, pinned_strong_builder.as_ref().build())`
+/// `pinned_strong_builder.as_ref().build(weak_wrapper).await`
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct WeakFuture<'a, T> {
     result: &'a RefCell<Option<T>>,
@@ -159,20 +158,50 @@ impl<'a, T> Deref for WeakFutureGuard<'a, T> {
     }
 }
 
-impl<'a, T, F> Future for StrongFuture<'a, T, F>
+impl<'a, T, F, F2> Future for StrongFuture<'a, T, F, F2>
 where
     F: Future<Output = T>,
+    F2: Future,
 {
-    type Output = ();
+    type Output = F2::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let is_strong_complete = { self.result.borrow().is_some() };
+        if is_strong_complete {
+            // This is a re-entry, meaning some weak futures are still pending,
+            // meaning some weak futures were waiting on other futures, which is forbidden
+            panic!("");
+        }
+
+        let mut weak_result: Option<F2::Output> = None;
+
+        // Strong future is incomplete. Run weak wrapper first so they reach weak futures.
+        {
+            let mut future1 = self.weak_wrapper.borrow_mut();
+            let pinned1 = unsafe { Pin::new_unchecked(&mut *future1) };
+            if let Poll::Ready(v) = pinned1.poll(cx) {
+                weak_result.replace(v);
+            }
+        }
+
         let mut future2 = self.timing.borrow_mut();
         let pinned2 = unsafe { Pin::new_unchecked(&mut *future2) };
         let Poll::Ready(v) = pinned2.poll(cx) else {
             return Poll::Pending;
         };
         self.result.replace(Some(v));
-        Poll::Ready(())
+
+        // Strong future is complete. Run weak wrappers **in the same poll** to avoid another run_async_step
+        if let Some(result) = weak_result {
+            Poll::Ready(result)
+        } else {
+            let mut future3 = self.weak_wrapper.borrow_mut();
+            let pinned3 = unsafe { Pin::new_unchecked(&mut *future3) };
+            let Poll::Ready(v) = pinned3.poll(cx) else {
+                return Poll::Pending;
+            };
+            Poll::Ready(v)
+        }
     }
 }
 
@@ -191,10 +220,9 @@ where
 /// `futures_lite::future::zip()` call.
 /// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`.
 ///
-/// **Caveat**: To fully execute everything, you must zip this `weak_wrapper` again with the [StrongFuture],
-/// in this specific order:
+/// **Caveat**: To fully execute everything, you build a [StrongFuture] by passing your `weak_wrapper` future:
 ///
-/// `futures_lite::future::zip(weak_wrapper, pinned_strong_builder.as_ref().build())`
+/// `pinned_strong_builder.as_ref().build(weak_wrapper).await`
 pub fn upgrade<'a, T, F>(future: F) -> StrongWeakBuilder<T, F>
 where
     F: Future<Output = T>,
@@ -224,17 +252,18 @@ where
 impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
     /// This function will build a [StrongFuture] which runs the actual, original future.
     ///
-    /// To fully execute everything, you must zip your `weak_wrapper` future with this strong
-    /// future, in this specific order:
+    /// To fully execute everything, you build a [StrongFuture] by passing your `weak_wrapper` future:
     ///
-    /// `futures_lite::future::zip(weak_wrapper, pinned_strong_builder.as_ref().build())`
-    pub fn build<'a>(self: Pin<&'a Self>) -> StrongFuture<'a, T, F>
+    /// `pinned_strong_builder.as_ref().build(weak_wrapper).await`
+    pub fn build<'a, F2>(self: Pin<&'a Self>, weak_wrapper: F2) -> StrongFuture<'a, T, F, F2>
     where
         F: Future<Output = T>,
+        F2: Future,
     {
         StrongFuture {
             result: &self.get_ref().result,
             timing: &self.get_ref().timing,
+            weak_wrapper: RefCell::new(weak_wrapper),
         }
     }
 
@@ -309,8 +338,7 @@ mod tests {
                         }
                     },
                 );
-                let (_, (result1, result2)) =
-                    futures_lite::future::zip(strong_pinned.as_ref().build(), weak_wrapper).await;
+                let (result1, result2) = strong_pinned.as_ref().build(weak_wrapper).await;
                 Ok::<i32, AsyncRuntimeError>(result1? + result2?)
             });
 
@@ -360,8 +388,7 @@ mod tests {
                         Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
                     }
                 };
-                let (_, result) =
-                    futures_lite::future::zip(strong_pinned.as_ref().build(), weak_wrapper).await;
+                let result = strong_pinned.as_ref().build(weak_wrapper).await;
                 Ok::<i32, AsyncRuntimeError>(result?)
             });
             assert_eq!(runtime.run_async_step(&mut test_future), None);
