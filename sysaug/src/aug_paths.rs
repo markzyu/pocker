@@ -37,6 +37,7 @@ type StrongWeakBuilder<F> = krsm::StrongWeakBuilder<StrongWeakOutput, F>;
 // How many system call arguments are considered
 const ARGS_LEN: usize = 5;
 
+// This is a helper struct that holds registers and parsed paths during syscall-entry
 struct AugmentState {
     entry_regs: RefCell<GenericPurposeRegs>,
     orig_args: [usize; ARGS_LEN],
@@ -48,117 +49,94 @@ struct AugmentState {
     need_skip_syscall: RefCell<Option<usize>>,
 }
 
-#[allow(dead_code)]
-impl AugmentState {
-    fn update_arg(&self, idx: usize, update_fn: impl Fn(usize) -> usize) {
-        let mut guard = self.entry_regs.borrow_mut();
-        let mut guard2 = self.need_write_regs.borrow_mut();
-        *guard2 = true;
-        match idx {
-            0 => guard.arg0 = update_fn(guard.arg0),
-            1 => guard.arg1 = update_fn(guard.arg1),
-            2 => guard.arg2 = update_fn(guard.arg2),
-            3 => guard.arg3 = update_fn(guard.arg3),
-            4 => guard.arg4 = update_fn(guard.arg4),
-            _ => (),
-        }
-    }
-
-    fn write_arg(&self, idx: usize, val: usize) {
-        self.update_arg(idx, |_| val);
-    }
-
-    // Save new override for path at register idx, and mark as "write to register"
-    fn save_path(&self, idx: usize, val: PathBuf) {
-        let mut guard = self.save_paths.borrow_mut();
-        let mut guard2 = self.need_write_paths.borrow_mut();
-        guard[idx].replace(val);
-        *guard2 |= 1 << idx;
-    }
-
-    // Save the path at register idx, and mark as "do NOT write to register"
-    fn save_path_without_writing(&self, idx: usize, val: PathBuf) {
-        let mut guard = self.save_paths.borrow_mut();
-        guard[idx].replace(val);
-    }
-
-    fn set_skip_syscall(&self, retval: usize) {
-        let mut guard = self.need_skip_syscall.borrow_mut();
-        guard.replace(retval);
-    }
-
-    fn for_saved_path(
-        &self,
-        iter_fn: impl Fn(&PathBuf) -> Result<(), SysAugError>,
-    ) -> Result<(), SysAugError> {
-        let guard = self.save_paths.borrow();
-        for path in guard.iter().flatten() {
-            iter_fn(path)?;
-        }
-        Ok(())
-    }
-
-    /// `iter_fn(pathbuf, path index in register)` must return true if it made a change to the paths
-    fn first_saved_path_mut(
-        &self,
-        iter_fn: impl Fn(&mut PathBuf, usize) -> Result<bool, SysAugError>,
-    ) -> Result<bool, SysAugError> {
-        let mut guard = self.save_paths.borrow_mut();
-        let i = guard.iter().position(|x| x.is_some());
-        if let Some(i) = i {
-            let pathbuf = (&mut guard[i]).as_mut().unwrap();
-            let is_changed = iter_fn(pathbuf, i)?;
-            if is_changed {
-                let mut guard2 = self.need_write_paths.borrow_mut();
-                *guard2 |= 1 << i;
-            }
-            return Ok(is_changed);
-        }
-        Ok(false)
-    }
-
-    /// `iter_fn(pathbuf at i)` if only called if i exists
-    fn saved_path_idx(
-        &self,
-        i: usize,
-        mut iter_fn: impl FnMut(&PathBuf) -> Result<(), SysAugError>,
-    ) -> Result<(), SysAugError> {
-        let guard = self.save_paths.borrow();
-        let arr = &*guard;
-        if let Some(pathbuf1) = arr[i].as_ref() {
-            iter_fn(pathbuf1)?;
-        }
-        Ok(())
-    }
-
-    /// `iter_fn(pathbuf at i, pathbuf at j)` is only called if both i and j exist
-    fn saved_path_pair(
-        &self,
-        i: usize,
-        j: usize,
-        iter_fn: impl Fn(&PathBuf, &PathBuf) -> Result<(), SysAugError>,
-    ) -> Result<(), SysAugError> {
-        let guard = self.save_paths.borrow();
-        let arr = &*guard;
-        let pathbuf1 = arr[i].as_ref();
-        let pathbuf2 = arr[j].as_ref();
-        if let Some(p1) = pathbuf1
-            && let Some(p2) = pathbuf2
-        {
-            iter_fn(p1, p2)?;
-        }
-        Ok(())
-    }
-}
-
-fn clone<T: Clone>(cell: &RefCell<T>) -> T {
-    let guard = cell.borrow();
-    guard.clone()
-}
-
 impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceClient> {
+    pub async fn augment_sys_paths(
+        &self,
+        orig_regs: GenericPurposeRegs,
+        syscall: &SyscallInfo,
+    ) -> Result<(), SysAugError> {
+        let pid = self.pid;
+        let ptrace_client = &self.ptrace_client;
+        let state = self._aug_paths_do_parse_state(orig_regs, syscall).await?;
+
+        // If we already need to skip system call, then, skip it. (it's an ELOOP)
+        let maybe_skip_syscall_retval = { *state.need_skip_syscall.borrow() };
+        if let Some(retval) = maybe_skip_syscall_retval {
+            self.do_skip_syscall(retval).await?;
+            return Ok(());
+        }
+
+        // Run synchronous augments first
+        self.augment_deletion(syscall, &state)?;
+        self.augment_hardlink_following(syscall, &state)?;
+
+        let syscall_future = async {
+            // Write new paths into register
+            let need_skip_syscall = { state.need_skip_syscall.borrow().clone() };
+            let need_write_paths = { *state.need_write_paths.borrow() };
+            for i in 0..ARGS_LEN {
+                let check_bit: usize = 1 << i;
+                if (need_write_paths & check_bit) == 0 {
+                    continue;
+                }
+                let save_paths = state.save_paths.borrow();
+                if let Some(path) = save_paths[i].as_ref() {
+                    let tracee_addr = self.tracee_stack_append_path(path.clone())?;
+                    state.write_arg(i, tracee_addr);
+                }
+            }
+
+            // Write new register to tracee
+            let need_write_regs = { *state.need_write_regs.borrow() };
+            if need_write_regs && need_skip_syscall.is_none() {
+                let regs = state.entry_regs.borrow().clone();
+                ptrace_client.execute(move || setregs(pid, regs))??;
+            }
+
+            // Perform system call
+            if let Some(retval) = need_skip_syscall {
+                self.do_skip_syscall(retval).await?;
+                let regs = ptrace_client.execute(move || getregs(pid))??;
+                StrongWeakOutput::Ok((regs, retval as isize))
+            } else {
+                let regs = self.do_resume_syscall().await?;
+                let retval = regs.syscall_retval();
+                StrongWeakOutput::Ok((regs, retval as isize))
+            }
+        };
+        let strong_builder = krsm::upgrade(syscall_future);
+        let strong_pinned = pin!(strong_builder);
+
+        let weak_group1 = futures_lite::future::try_zip(
+            futures_lite::future::try_zip(
+                self.augment_chmod(strong_pinned.as_ref(), syscall, &state),
+                self.augment_chmod_on_creation(strong_pinned.as_ref(), syscall, &state),
+            ),
+            futures_lite::future::try_zip(
+                self.augment_chown(strong_pinned.as_ref(), syscall, &state),
+                self.augment_rename(strong_pinned.as_ref(), syscall, &state),
+            ),
+        );
+        let weak_group2 = futures_lite::future::try_zip(
+            futures_lite::future::try_zip(
+                self.augment_symlink_creation(strong_pinned.as_ref(), syscall, &state),
+                self.augment_hardlink_creation(strong_pinned.as_ref(), syscall, &state),
+            ),
+            futures_lite::future::try_zip(
+                self.augment_getdents(strong_pinned.as_ref(), syscall, &state),
+                self.augment_stat(strong_pinned.as_ref(), syscall, &state),
+            ),
+        );
+        let weak_future = futures_lite::future::try_zip(weak_group1, weak_group2);
+        let result = strong_pinned.as_ref().build(weak_future).await;
+        if let Err(Some(e)) = result {
+            return Err(e);
+        }
+        Ok(())
+    }
+
     // Parse register upon syscall-entry, into aug_path::AugmentState
-    async fn augment_sys_paths_new_state(
+    async fn _aug_paths_do_parse_state(
         &self,
         entry_regs: GenericPurposeRegs,
         syscall: &SyscallInfo,
@@ -204,16 +182,11 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let path_action = self
                 .calc_real_path(&orig_path_buf, syscall, &orig_args)
                 .await?;
-            match path_action {
+
+            let final_path = match path_action {
                 PathAction::Override(new_path_val) => {
-                    // In case of AT_EMPTY_PATH/empty relative path, just pass dirfd_path only
-                    let input_path = if new_path_val.as_os_str().is_empty() {
-                        dirfd_path.to_path_buf()
-                    } else {
-                        dirfd_path.join(&new_path_val)
-                    };
-                    save_paths[i] = Some(input_path);
                     need_write_paths |= check_bit;
+                    new_path_val
                 }
                 PathAction::ELOOP => {
                     let retval = -libc::ELOOP as usize;
@@ -226,16 +199,17 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                         need_write_regs: RefCell::new(false),
                     });
                 }
-                _ => {
-                    // In case of AT_EMPTY_PATH/empty relative path, just pass dirfd_path only
-                    let input_path = if orig_path_buf.as_os_str().is_empty() {
-                        dirfd_path.to_path_buf()
-                    } else {
-                        dirfd_path.join(orig_path_buf)
-                    };
-                    save_paths[i] = Some(input_path);
-                }
-            }
+                _ => orig_path_buf,
+            };
+
+            // Consider dirfd
+            let final_path = if final_path.as_os_str().is_empty() {
+                // In case of AT_EMPTY_PATH/empty relative path, just pass dirfd_path only
+                dirfd_path.to_path_buf()
+            } else {
+                dirfd_path.join(&final_path)
+            };
+            save_paths[i] = Some(final_path);
         }
 
         // Handle filefd_position (This overwrites all other save_paths)
@@ -260,130 +234,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         })
     }
 
-    pub async fn augment_sys_paths(
-        &self,
-        orig_regs: GenericPurposeRegs,
-        syscall: &SyscallInfo,
-    ) -> Result<(), SysAugError> {
-        let pid = self.pid;
-        let ptrace_client = &self.ptrace_client;
-        let state = self.augment_sys_paths_new_state(orig_regs, syscall).await?;
-
-        // If we already need to skip system call, then it's a ELOOP
-        if let Some(retval) = clone(&state.need_skip_syscall) {
-            self.do_skip_syscall(retval).await?;
-            return Ok(());
-        }
-
-        // Delete metadata before unlink & rmdir
-        if syscall.deletion_type.is_some() {
-            state.for_saved_path(|path| {
-                self.delete_metadata_for_file(path)?;
-                Ok(())
-            })?;
-        }
-
-        // Handle reads of hardlinks
-        if syscall.should_follow_hardlink {
-            state.first_saved_path_mut(|pathbuf, i| {
-                let path = pathbuf.as_path();
-                if let Some(meta) = self.read_metadata_for_file(path)?
-                    && meta.hardlink_counter.is_some()
-                {
-                    // Resolve the actual path of the hardlink
-                    *pathbuf = path.canonicalize().map_err(SysAugError::StatHardlinkIO)?;
-
-                    // Set dirfd to AT_FDCWD to avoid ELOOP on some Linux
-                    if syscall.dirfd_precedes_path {
-                        state.write_arg(i - 1, libc::AT_FDCWD as usize);
-                    }
-
-                    if let Some(j) = syscall.dirfd_position {
-                        state.write_arg(j as usize, libc::AT_FDCWD as usize);
-                    }
-                    return Ok(true);
-                }
-                Ok(false)
-            })?;
-        }
-
-        let syscall_future = async {
-            // Write new paths into register
-            let need_skip_syscall = { state.need_skip_syscall.borrow().clone() };
-            let need_write_paths = { *state.need_write_paths.borrow() };
-            for i in 0..ARGS_LEN {
-                let check_bit: usize = 1 << i;
-                if (need_write_paths & check_bit) == 0 {
-                    continue;
-                }
-                let save_paths = state.save_paths.borrow();
-                if let Some(path) = save_paths[i].as_ref() {
-                    let tracee_addr = self.tracee_stack_append_path(path.clone())?;
-                    state.write_arg(i, tracee_addr);
-                }
-            }
-
-            // Write new register to tracee
-            let need_write_regs = { *state.need_write_regs.borrow() };
-            if need_write_regs && need_skip_syscall.is_none() {
-                let regs = state.entry_regs.borrow().clone();
-                ptrace_client.execute(move || setregs(pid, regs))??;
-            }
-
-            // Perform system call
-            if let Some(retval) = need_skip_syscall {
-                self.do_skip_syscall(retval).await?;
-                let regs = ptrace_client.execute(move || getregs(pid))??;
-                StrongWeakOutput::Ok((regs, retval as isize))
-            } else {
-                let regs = self.do_resume_syscall().await?;
-                let retval = regs.syscall_retval();
-                StrongWeakOutput::Ok((regs, retval as isize))
-            }
-        };
-        let future_builder = krsm::upgrade(syscall_future);
-        let mut builder_pinned = pin!(future_builder);
-
-        // Creating a RAII scope to make sure we can later do: strong_pinned.as_mut()
-        {
-            let weak_group1 = futures_lite::future::try_zip(
-                futures_lite::future::try_zip(
-                    self.augment_chmod(builder_pinned.as_ref(), syscall, &state),
-                    self.augment_chmod_on_creation(builder_pinned.as_ref(), syscall, &state),
-                ),
-                futures_lite::future::try_zip(
-                    self.augment_chown(builder_pinned.as_ref(), syscall, &state),
-                    self.augment_rename(builder_pinned.as_ref(), syscall, &state),
-                ),
-            );
-            let weak_group2 = futures_lite::future::try_zip(
-                futures_lite::future::try_zip(
-                    self.augment_symlink_creation(builder_pinned.as_ref(), syscall, &state),
-                    self.augment_hardlink_creation(builder_pinned.as_ref(), syscall, &state),
-                ),
-                self.augment_getdents(builder_pinned.as_ref(), syscall, &state),
-            );
-            let weak_future = futures_lite::future::try_zip(weak_group1, weak_group2);
-            let result = builder_pinned.as_ref().build(weak_future).await;
-            if let Err(Some(e)) = result {
-                return Err(e);
-            }
-        }
-
-        let (_, retval) = builder_pinned.as_mut().take_result()?;
-        if retval < 0 {
-            return Ok(());
-        }
-
-        {
-            let orig_args = &state.orig_args;
-            let save_paths = state.save_paths.borrow();
-            self.on_stat_syscall_exit(syscall, orig_args, &*save_paths)
-                .await?;
-        }
-        Ok(())
-    }
-
     async fn augment_getdents<F: Future<Output = StrongWeakOutput>>(
         &self,
         future_builder: Pin<&StrongWeakBuilder<F>>,
@@ -392,7 +242,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     ) -> Result<(), Option<SysAugError>> {
         // Before system call, make the buffer seem smaller
         if syscall.getdents_bits.is_some() {
-            state.update_arg(2, |v| v / 2);
+            state.write_arg(2, state.orig_args[2] / 2);
         }
 
         // Resume system call, and drop the WeakFutureGuard
@@ -590,6 +440,56 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(())
     }
 
+    // An augment function is synchronous if it only cares about the syscall-entry
+    fn augment_hardlink_following(
+        &self,
+        syscall: &SyscallInfo,
+        state: &AugmentState,
+    ) -> Result<(), SysAugError> {
+        if !syscall.should_follow_hardlink {
+            return Ok(());
+        }
+
+        state.first_saved_path_mut(|pathbuf, i| {
+            let path = pathbuf.as_path();
+            if let Some(meta) = self.read_metadata_for_file(path)?
+                && meta.hardlink_counter.is_some()
+            {
+                // Resolve the actual path of the hardlink
+                *pathbuf = path.canonicalize().map_err(SysAugError::StatHardlinkIO)?;
+
+                // Set dirfd to AT_FDCWD to avoid ELOOP on some Linux
+                if syscall.dirfd_precedes_path {
+                    state.write_arg(i - 1, libc::AT_FDCWD as usize);
+                }
+
+                if let Some(j) = syscall.dirfd_position {
+                    state.write_arg(j as usize, libc::AT_FDCWD as usize);
+                }
+                return Ok(true);
+            }
+            Ok(false)
+        })?;
+        Ok(())
+    }
+
+    // An augment function is synchronous if it only cares about the syscall-entry
+    fn augment_deletion(
+        &self,
+        syscall: &SyscallInfo,
+        state: &AugmentState,
+    ) -> Result<(), SysAugError> {
+        if !syscall.deletion_type.is_some() {
+            return Ok(());
+        }
+
+        state.for_saved_path(|path| {
+            self.delete_metadata_for_file(path)?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     fn increment_hardlink_counter(&self, path: &PathBuf) -> Result<(), SysAugError> {
         self.save_metadata_for_file(path, |x| {
             if let Some(count) = x.hardlink_counter {
@@ -718,50 +618,49 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(())
     }
 
-    async fn on_stat_syscall_exit(
+    async fn augment_stat<F: Future<Output = StrongWeakOutput>>(
         &self,
+        future_builder: Pin<&StrongWeakBuilder<F>>,
         syscall: &SyscallInfo,
-        orig_args: &[usize],
-        save_paths: &[Option<PathBuf>],
-    ) -> Result<(), SysAugError> {
-        let maybe_stat_path =
-            save_paths
-                .iter()
-                .find_map(|x| x.as_ref())
-                .ok_or(SysAugError::SyscallMissingField(
-                    "stat syscalls don't have a corresponding path/fd to read from",
-                ));
+        state: &AugmentState,
+    ) -> Result<(), Option<SysAugError>> {
+        let maybe_position = syscall
+            .stat_buf_position
+            .or(syscall.stat_legacy_buf_position)
+            .or(syscall.stat64_buf_position)
+            .or(syscall.statx_buf_position);
+        let Some(position) = maybe_position else {
+            return Ok(());
+        };
 
-        if let Some(position) = &syscall.stat_buf_position {
-            let path = maybe_stat_path?.as_path();
-            let addr = orig_args[*position as usize];
-            self.replace_statbuf_result::<libc::stat>(addr, path)
-                .await?;
-        } else if let Some(position) = &syscall.stat_legacy_buf_position {
-            let path = maybe_stat_path?.as_path();
-            let addr = orig_args[*position as usize];
+        // Resume system call, and drop the WeakFutureGuard
+        let retval = {
+            let guard = krsm::downgrade(future_builder).await;
+            guard.as_ref().or(Err(None))?.1
+        };
 
-            #[cfg(target_pointer_width = "32")]
-            {
-                self.replace_statbuf_result::<StatLegacy>(addr, path)
-                    .await?;
-            }
-            #[cfg(target_pointer_width = "64")]
-            {
-                self.replace_statbuf_result::<libc::stat>(addr, path)
-                    .await?;
-            }
-        } else if let Some(position) = &syscall.stat64_buf_position {
-            let path = maybe_stat_path?.as_path();
-            let addr = orig_args[*position as usize];
-            self.replace_statbuf_result::<libc::stat64>(addr, path)
-                .await?;
-        } else if let Some(position) = &syscall.statx_buf_position {
-            let path = maybe_stat_path?.as_path();
-            let addr = orig_args[*position as usize];
-            self.replace_statbuf_result::<libc::statx>(addr, path)
-                .await?;
+        if retval < 0 {
+            return Ok(());
         }
+
+        // After system call. Check `stat*_position` flags in syscall info.
+        state.first_saved_path_mut(|path, _| {
+            let path = path.as_path();
+            let addr = state.orig_args[position as usize];
+            if syscall.stat_buf_position.is_some() {
+                self.replace_statbuf_result::<libc::stat>(addr, path)?;
+            } else if syscall.stat_legacy_buf_position.is_some() {
+                #[cfg(target_pointer_width = "32")]
+                self.replace_statbuf_result::<StatLegacy>(addr, path)?;
+                #[cfg(target_pointer_width = "64")]
+                self.replace_statbuf_result::<libc::stat>(addr, path)?;
+            } else if syscall.stat64_buf_position.is_some() {
+                self.replace_statbuf_result::<libc::stat64>(addr, path)?;
+            } else if syscall.statx_buf_position.is_some() {
+                self.replace_statbuf_result::<libc::statx>(addr, path)?;
+            }
+            Ok(false)
+        })?;
         Ok(())
     }
 
@@ -858,7 +757,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(())
     }
 
-    async fn replace_statbuf_result<T>(&self, addr: usize, path: &Path) -> Result<(), SysAugError>
+    fn replace_statbuf_result<T>(&self, addr: usize, path: &Path) -> Result<(), SysAugError>
     where
         T: IStat + Clone + Send + 'static,
     {
@@ -904,6 +803,90 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let max_size = stats.len() * std::mem::size_of::<T>();
         ptrace_client
             .execute(move || write_fixed_sized_objs_to_tracee(pid, addr, max_size, stats))??;
+        Ok(())
+    }
+}
+
+impl AugmentState {
+    fn write_arg(&self, idx: usize, val: usize) {
+        let mut guard = self.entry_regs.borrow_mut();
+        let mut guard2 = self.need_write_regs.borrow_mut();
+        *guard2 = true;
+        match idx {
+            0 => guard.arg0 = val,
+            1 => guard.arg1 = val,
+            2 => guard.arg2 = val,
+            3 => guard.arg3 = val,
+            4 => guard.arg4 = val,
+            _ => (),
+        }
+    }
+
+    fn set_skip_syscall(&self, retval: usize) {
+        let mut guard = self.need_skip_syscall.borrow_mut();
+        guard.replace(retval);
+    }
+
+    fn for_saved_path(
+        &self,
+        iter_fn: impl Fn(&PathBuf) -> Result<(), SysAugError>,
+    ) -> Result<(), SysAugError> {
+        let guard = self.save_paths.borrow();
+        for path in guard.iter().flatten() {
+            iter_fn(path)?;
+        }
+        Ok(())
+    }
+
+    /// `iter_fn(pathbuf, path index in register)` must return true if it made a change to the paths
+    fn first_saved_path_mut(
+        &self,
+        iter_fn: impl Fn(&mut PathBuf, usize) -> Result<bool, SysAugError>,
+    ) -> Result<bool, SysAugError> {
+        let mut guard = self.save_paths.borrow_mut();
+        let i = guard.iter().position(|x| x.is_some());
+        if let Some(i) = i {
+            let pathbuf = (&mut guard[i]).as_mut().unwrap();
+            let is_changed = iter_fn(pathbuf, i)?;
+            if is_changed {
+                let mut guard2 = self.need_write_paths.borrow_mut();
+                *guard2 |= 1 << i;
+            }
+            return Ok(is_changed);
+        }
+        Ok(false)
+    }
+
+    /// `iter_fn(pathbuf at i)` if only called if i exists
+    fn saved_path_idx(
+        &self,
+        i: usize,
+        mut iter_fn: impl FnMut(&PathBuf) -> Result<(), SysAugError>,
+    ) -> Result<(), SysAugError> {
+        let guard = self.save_paths.borrow();
+        let arr = &*guard;
+        if let Some(pathbuf1) = arr[i].as_ref() {
+            iter_fn(pathbuf1)?;
+        }
+        Ok(())
+    }
+
+    /// `iter_fn(pathbuf at i, pathbuf at j)` is only called if both i and j exist
+    fn saved_path_pair(
+        &self,
+        i: usize,
+        j: usize,
+        iter_fn: impl Fn(&PathBuf, &PathBuf) -> Result<(), SysAugError>,
+    ) -> Result<(), SysAugError> {
+        let guard = self.save_paths.borrow();
+        let arr = &*guard;
+        let pathbuf1 = arr[i].as_ref();
+        let pathbuf2 = arr[j].as_ref();
+        if let Some(p1) = pathbuf1
+            && let Some(p2) = pathbuf2
+        {
+            iter_fn(p1, p2)?;
+        }
         Ok(())
     }
 }
