@@ -102,7 +102,7 @@ Here are some (outdated) instructions about Android cross-compilation without Te
 
 - Install GNU toolchains (`arm-linux-*-gcc` and `aarch64-linux-*-gcc`)
 - Update your `~/.cargo/config`:
-  ```
+  ```toml
   [target.armv7-unknown-linux-gnueabihf]
   rustflags = ["-C", "target-feature=+crt-static"]
   linker = "arm-linux-foobar-gcc"
