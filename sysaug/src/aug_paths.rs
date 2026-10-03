@@ -238,7 +238,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         // If we already need to skip system call, then it's a ELOOP
         if let Some(retval) = clone(&state.need_skip_syscall) {
             self.do_skip_syscall(retval).await?;
-            return Ok(())
+            return Ok(());
         }
 
         // Handle filefd_position (This overwrites all other save_paths)

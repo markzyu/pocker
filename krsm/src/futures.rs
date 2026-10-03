@@ -296,11 +296,6 @@ mod tests {
             Ok::<i32, AsyncRuntimeError>(result1? + result2?)
         });
 
-        // The first poll is wasted on AsyncYielder
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(!runtime._has_new_blockage());
-
-        // The second poll is waiting on PtraceFutureTypes::WaitForSignal
         assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(runtime._has_new_blockage());
         assert_eq!(runtime._pending_futures_size(), 1);
@@ -341,11 +336,6 @@ mod tests {
             let (_, result) = futures_lite::future::zip(strong_future.build(), weak_wrapper).await;
             Ok::<i32, AsyncRuntimeError>(result?)
         });
-        // The first poll is wasted on AsyncYielder
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
-        assert!(!runtime._has_new_blockage());
-
-        // The second poll is waiting on PtraceFutureTypes::WaitForSignal
         assert_eq!(runtime.run_async_step(&mut test_future), None);
         assert!(runtime._has_new_blockage());
         assert_eq!(runtime._pending_futures_size(), 1);
