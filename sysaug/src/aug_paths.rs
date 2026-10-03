@@ -21,6 +21,7 @@ use std::cell::RefCell;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
+use std::pin::pin;
 use tracing::{Level, event};
 
 /// Per Linux inode.7 documentation, stx_mode needs a mask, if we only want to manipulate chmod
@@ -31,7 +32,7 @@ const EEXIST: usize = -libc::EEXIST as usize;
 
 // The StrongFuture will output (regs after system call, retval of system call)
 type StrongWeakOutput = Result<(GenericPurposeRegs, isize), SysAugError>;
-type StrongWeakBuilder<F> = krsm::StrongWeakBuilder<StrongWeakOutput, F>;
+type StrongWeakBuilder<'a, F> = krsm::StrongWeakBuilder<'a, StrongWeakOutput, F>;
 
 // How many system call arguments are considered
 const ARGS_LEN: usize = 5;
@@ -411,7 +412,8 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 StrongWeakOutput::Ok((regs, retval as isize))
             }
         };
-        let future_builder = krsm::upgrade(syscall_future);
+        let syscall_pinned = pin!(syscall_future);
+        let future_builder = krsm::upgrade(syscall_pinned);
 
         let weak_future = futures_lite::future::zip(
             futures_lite::future::zip(
@@ -420,7 +422,8 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             ),
             self.augment_chown(&future_builder, syscall, &state),
         );
-        let ((r0, r1), r2) = future_builder.build(weak_future).await;
+        let (_, ((r0, r1), r2)) =
+            futures_lite::future::zip(future_builder.build(), weak_future).await;
         for result in [r0, r1, r2] {
             if let Err(Some(e)) = result {
                 return Err(e);
@@ -529,9 +532,9 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(())
     }
 
-    async fn augment_chown<F: Future<Output = StrongWeakOutput>>(
+    async fn augment_chown<'a, F: Future<Output = StrongWeakOutput>>(
         &self,
-        future_builder: &StrongWeakBuilder<F>,
+        future_builder: &StrongWeakBuilder<'a, F>,
         syscall: &SyscallInfo,
         state: &AugmentState,
     ) -> Result<(), Option<SysAugError>> {
@@ -571,9 +574,9 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(())
     }
 
-    async fn augment_chmod<F: Future<Output = StrongWeakOutput>>(
+    async fn augment_chmod<'a, F: Future<Output = StrongWeakOutput>>(
         &self,
-        future_builder: &StrongWeakBuilder<F>,
+        future_builder: &StrongWeakBuilder<'a, F>,
         syscall: &SyscallInfo,
         state: &AugmentState,
     ) -> Result<(), Option<SysAugError>> {
@@ -605,9 +608,9 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(())
     }
 
-    async fn augment_chmod_on_creation<F: Future<Output = StrongWeakOutput>>(
+    async fn augment_chmod_on_creation<'a, F: Future<Output = StrongWeakOutput>>(
         &self,
-        future_builder: &StrongWeakBuilder<F>,
+        future_builder: &StrongWeakBuilder<'a, F>,
         syscall: &SyscallInfo,
         state: &AugmentState,
     ) -> Result<(), Option<SysAugError>> {

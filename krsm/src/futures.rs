@@ -31,11 +31,11 @@ struct AsyncYielderFuture<'a> {
 /// This is a builder struct + RAII guard, for both [StrongFuture] and [WeakFuture]
 ///
 /// You can obtain one by calling [upgrade] on any [Future]
-pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
+pub struct StrongWeakBuilder<'a, T, F: Future<Output = T>> {
     /// Strong yields to Weak at the beginning to give weak a chance to initialize
     yielder: AsyncYielder,
     result: RefCell<Option<T>>,
-    timing: RefCell<F>,
+    timing: RefCell<Option<Pin<&'a mut F>>>,
     _marker: PhantomPinned,
 }
 
@@ -57,14 +57,12 @@ pub struct StrongWeakBuilder<T, F: Future<Output = T>> {
 ///
 /// The zipped future, whose branches wait for [WeakFuture], is called a `weak_wrapper`
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct StrongFuture<'a, T, F: Future<Output = T>, F2: Future> {
+pub struct StrongFuture<'a, T, F: Future<Output = T>> {
     result: &'a RefCell<Option<T>>,
-    timing: &'a RefCell<F>,
-    should_poll_timing: RefCell<bool>,
+    timing: Pin<&'a mut F>,
     /// Strong yields to Weak at the beginning to give weak a chance to initialize
     yielder: &'a AsyncYielder,
     should_yield: RefCell<bool>,
-    weak_wrapper: RefCell<F2>,
 }
 
 /// A weak future is like a borrowed reference to a [StrongFuture]. You can have as
@@ -163,14 +161,13 @@ impl<'a, T> Deref for WeakFutureGuard<'a, T> {
     }
 }
 
-impl<'a, T, F, F2> Future for StrongFuture<'a, T, F, F2>
+impl<'a, T, F> Future for StrongFuture<'a, T, F>
 where
     F: Future<Output = T>,
-    F2: Future,
 {
-    type Output = F2::Output;
+    type Output = ();
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let should_yield = self.should_yield.replace(false);
         if should_yield {
             let future1 = self.yielder.yield_now();
@@ -180,20 +177,11 @@ where
             };
         }
 
-        let should_poll_timing = { *self.should_poll_timing.borrow() };
-        if should_poll_timing {
-            let mut future2 = self.timing.borrow_mut();
-            let pinned2 = unsafe { Pin::new_unchecked(&mut *future2) };
-            let Poll::Ready(v) = pinned2.poll(cx) else {
-                return Poll::Pending;
-            };
-            self.result.replace(Some(v));
-            self.should_poll_timing.replace(false);
-        }
-
-        let mut future3 = self.weak_wrapper.borrow_mut();
-        let pinned3 = unsafe { Pin::new_unchecked(&mut *future3) };
-        pinned3.poll(cx)
+        let Poll::Ready(v) = self.timing.as_mut().poll(cx) else {
+            return Poll::Pending;
+        };
+        self.result.replace(Some(v));
+        Poll::Ready(())
     }
 }
 
@@ -211,13 +199,13 @@ where
 /// `futures_lite::future::zip()` call.
 ///
 /// The zipped future is called a `weak_wrapper`.
-pub fn upgrade<'a, T, F>(future: F) -> StrongWeakBuilder<T, F>
+pub fn upgrade<'a, T, F>(future: Pin<&'a mut F>) -> StrongWeakBuilder<'a, T, F>
 where
     F: Future<Output = T>,
 {
     StrongWeakBuilder {
         result: RefCell::new(None),
-        timing: RefCell::new(future),
+        timing: RefCell::new(Some(future)),
         yielder: AsyncYielder::default(),
         _marker: PhantomPinned::default(),
     }
@@ -229,7 +217,7 @@ where
 ///
 /// Caveat: The result from `weak_future.await` is a [WeakFutureGuard]. And you **must** drop this guard
 /// manually before any other `await` in your own async code. Otherwise, Rust **will panic**.
-pub fn downgrade<'a, T, F>(strong: &'a StrongWeakBuilder<T, F>) -> WeakFuture<'a, T>
+pub fn downgrade<'a, 'b: 'a, T, F>(strong: &'a StrongWeakBuilder<'b, T, F>) -> WeakFuture<'a, T>
 where
     F: Future<Output = T>,
 {
@@ -239,24 +227,22 @@ where
     }
 }
 
-impl<T, F: Future<Output = T>> StrongWeakBuilder<T, F> {
+impl<'a, T, F: Future<Output = T>> StrongWeakBuilder<'a, T, F> {
     /// This function allows you to pass [WeakFuture] instances to async wrapper functions,
     /// as a `weak_wrapper` future, which can be, for example: `futures_lite::future::zip()`
     ///
     /// This function will build a [StrongFuture] which runs the resulting `weak_wrapper` future,
     /// as well as the original future that was consumed by [upgrade].
-    pub fn build<F2>(&self, weak_wrapper: F2) -> StrongFuture<'_, T, F, F2>
+    pub fn build(&self) -> StrongFuture<'_, T, F>
     where
         F: Future<Output = T>,
-        F2: Future,
     {
+        let timing = self.timing.borrow_mut().take().unwrap();
         StrongFuture {
-            weak_wrapper: RefCell::new(weak_wrapper),
             should_yield: RefCell::new(true),
-            should_poll_timing: RefCell::new(true),
             yielder: &self.yielder,
             result: &self.result,
-            timing: &self.timing,
+            timing: unsafe { Pin::new_unchecked(timing.get_unchecked_mut()) },
         }
     }
 
@@ -304,30 +290,33 @@ mod tests {
     #[test]
     fn test_strong_weak_futures_can_be_used_to_blend_logics() {
         let runtime = PtraceAsyncRuntime::new();
-        let strong_future = futures::upgrade(async {
+        let strong_future = async {
             runtime
                 .new_pending_future(PtraceFutureTypes::WaitForSignal)
                 .await?;
             Ok::<i32, AsyncRuntimeError>(100)
-        });
+        };
+        let strong_pinned = pin!(strong_future);
+        let future_builder = futures::upgrade(strong_pinned);
         let mut test_future = pin!(async {
             let weak_wrapper = futures_lite::future::zip(
                 async {
-                    let guard1 = futures::downgrade(&strong_future).await;
+                    let guard1 = futures::downgrade(&future_builder).await;
                     match guard1.as_ref() {
                         Ok(val1) => Ok::<i32, AsyncRuntimeError>(val1 * 5),
                         Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
                     }
                 },
                 async {
-                    let guard2 = futures::downgrade(&strong_future).await;
+                    let guard2 = futures::downgrade(&future_builder).await;
                     match guard2.as_ref() {
                         Ok(val2) => Ok::<i32, AsyncRuntimeError>(val2 * 6),
                         Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
                     }
                 },
             );
-            let (result1, result2) = strong_future.build(weak_wrapper).await;
+            let (_, (result1, result2)) =
+                futures_lite::future::zip(future_builder.build(), weak_wrapper).await;
             Ok::<i32, AsyncRuntimeError>(result1? + result2?)
         });
 
@@ -347,9 +336,9 @@ mod tests {
         let output = runtime.run_async_step(&mut test_future);
 
         assert_eq!(runtime._pending_futures_size(), 0);
-        assert_eq!(strong_future.result.borrow().clone(), Some(Ok(100)));
+        assert_eq!(future_builder.result.borrow().clone(), Some(Ok(100)));
         assert_eq!(output, Some(Ok(1100)));
-        assert_eq!(strong_future.take_result(), Ok(100));
+        assert_eq!(future_builder.take_result(), Ok(100));
         assert!(!runtime._has_new_blockage());
     }
 
@@ -359,34 +348,37 @@ mod tests {
     )]
     fn test_incompatible_with_waker_such_as_futures_lite_yield_now_step2() {
         let runtime = PtraceAsyncRuntime::new();
-        let strong_future = futures::upgrade(async {
+        let strong_future = async {
             runtime
                 .new_pending_future(PtraceFutureTypes::WaitForSignal)
                 .await?;
             Ok::<i32, AsyncRuntimeError>(100)
-        });
-        let mut test_future = pin!(async {
+        };
+        let strong_pinned = pin!(strong_future);
+        let future_builder = futures::upgrade(strong_pinned);
+        let test_future = async {
             let weak_wrapper = async {
-                let guard1 = futures::downgrade(&strong_future).await;
+                let guard1 = futures::downgrade(&future_builder).await;
                 match guard1.as_ref() {
                     Ok(val1) => Ok::<i32, AsyncRuntimeError>(val1 * 5),
                     Err(err) => Err::<i32, AsyncRuntimeError>(err.clone()),
                 }
             };
-            let result = strong_future.build(weak_wrapper).await;
+            let (_, result) = futures_lite::future::zip(future_builder.build(), weak_wrapper).await;
             Ok::<i32, AsyncRuntimeError>(result?)
-        });
+        };
+        let mut test_pinned = pin!(test_future);
         // The first poll is wasted on AsyncYielder
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
+        assert_eq!(runtime.run_async_step(&mut test_pinned), None);
         assert!(!runtime._has_new_blockage());
 
         // The second poll is waiting on PtraceFutureTypes::WaitForSignal
-        assert_eq!(runtime.run_async_step(&mut test_future), None);
+        assert_eq!(runtime.run_async_step(&mut test_pinned), None);
         assert!(runtime._has_new_blockage());
         assert_eq!(runtime._pending_futures_size(), 1);
         _assert_one_pending_at(&runtime, 0, PtraceFutureTypes::WaitForSignal);
 
         // take_result() now, without completing the StrongFuture, will panic
-        let _ = strong_future.take_result();
+        let _ = future_builder.take_result();
     }
 }
