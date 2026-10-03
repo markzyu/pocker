@@ -578,7 +578,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         syscall: &SyscallInfo,
         state: &AugmentState,
     ) -> Result<(), Option<SysAugError>> {
-        if &syscall.sets_file_perms != &Some(PermType::Chown) {
+        if &syscall.sets_file_perms != &Some(PermType::Chmod) {
             return Ok(());
         }
 
