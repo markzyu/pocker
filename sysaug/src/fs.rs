@@ -462,7 +462,7 @@ impl FileSystem {
         &self,
         dirfd_path: &Option<PathBuf>,
         orig_path: &PathBuf,
-    ) -> Result<Option<PathBuf>, SysAugError> {
+    ) -> Option<PathBuf> {
         // Consider dirfd
         let empty_path = PathBuf::from("");
         let dirfd_path = dirfd_path.as_ref().unwrap_or(&empty_path);
@@ -476,15 +476,15 @@ impl FileSystem {
 
         if orig_path.as_os_str().is_empty() {
             // In case of AT_EMPTY_PATH with a non-file FD, pass the empty string as is
-            return Ok(Some(orig_path));
+            return Some(orig_path);
         }
 
         // If the path is not absolute, then inform downstream of ENOENT
         if orig_path.is_relative() {
-            return Ok(None);
+            return None;
         }
         let Ok(orig_path) = std::path::absolute(&orig_path) else {
-            return Ok(None);
+            return None;
         };
 
         // Strip the prefix if it matches
@@ -495,12 +495,12 @@ impl FileSystem {
         };
         if let Ok(stripped) = orig_path.strip_prefix(path_prefix) {
             let root = PathBuf::from("/");
-            return Ok(Some(root.join(stripped)));
+            return Some(root.join(stripped));
         }
 
         // Otherwise, return the path as is
         // (It could match a rename rule or an exclusion rule)
-        Ok(Some(orig_path))
+        Some(orig_path)
     }
 }
 
@@ -625,6 +625,26 @@ mod tests {
         assert_eq!(ans2, PathAction::ELOOP);
     }
 
+    #[test]
+    fn test_calc_real_path_of_symlink_not_followed() {
+        let (fs, dir) = setup();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_readlinkat as usize);
+        let syscall = maybe_syscall.expect("SYS_readlinkat syscall info");
+
+        let err = "Failed to setup tests";
+        std::os::unix::fs::symlink("/a", dir.join("b")).expect(err);
+        std::os::unix::fs::symlink("/b", dir.join("a")).expect(err);
+
+        let path1 = PathBuf::from("/a");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+
+        let path2 = PathBuf::from("/b");
+        let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
+
+        assert_eq!(ans1, PathAction::Override(dir.join("a")));
+        assert_eq!(ans2, PathAction::Override(dir.join("b")));
+    }
+
     fn setup_with_rename_config() -> (FileSystem, PathBuf) {
         let config = SysAugConfig {
             rootfs: RootfsConfig {
@@ -708,6 +728,25 @@ mod tests {
         assert_eq!(ans3, PathAction::ELOOP);
     }
 
+    #[test]
+    fn test_calc_real_path_of_symlink_not_followed_with_rename() {
+        let (fs, dir) = setup_with_rename_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_readlinkat as usize);
+        let syscall = maybe_syscall.expect("SYS_readlinkat syscall info");
+
+        let err = "Failed to setup tests";
+        std::os::unix::fs::symlink("/x", dir.join("xy")).expect(err);
+
+        let path1 = PathBuf::from("/xy");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+
+        let path2 = PathBuf::from("/x");
+        let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
+
+        assert_eq!(ans1, PathAction::Override(dir.join("xy")));
+        assert_eq!(ans2, PathAction::Override(dir.join("xy")));
+    }
+
     fn setup_with_passthrough_config() -> (FileSystem, PathBuf) {
         let config = SysAugConfig {
             rootfs: RootfsConfig {
@@ -752,6 +791,20 @@ mod tests {
         assert_eq!(ans1, PathAction::Override("/prefix1/file123.so".into()));
     }
 
+    #[test]
+    fn test_calc_real_path_with_symlink_to_passthrough_path_not_followed() {
+        let (fs, dir) = setup_with_passthrough_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_readlinkat as usize);
+        let syscall = maybe_syscall.expect("SYS_readlinkat syscall info");
+
+        let err = "Failed to setup tests";
+        std::os::unix::fs::symlink("/prefix1/file123.so", dir.join("y")).expect(err);
+
+        let path1 = PathBuf::from("/y");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans1, PathAction::Override(dir.join("y")));
+    }
+
     fn setup_with_exclusion_config() -> (FileSystem, PathBuf) {
         let config = SysAugConfig {
             rootfs: RootfsConfig {
@@ -790,5 +843,27 @@ mod tests {
         let path1 = PathBuf::from("/y");
         let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
         assert_eq!(ans1, PathAction::HidePath);
+    }
+
+    #[test]
+    fn test_calc_guest_path_from_dirfd() {
+        let (fs, dir) = setup();
+        let ans = fs.calc_guest_path_from_dirfd(&None, &dir.join("/x"));
+        assert_eq!(ans, Some("/x".into()));
+
+        let ans = fs.calc_guest_path_from_dirfd(&None, &PathBuf::from("/abc/def"));
+        assert_eq!(ans, Some("/abc/def".into()));
+
+        let ans = fs.calc_guest_path_from_dirfd(&None, &PathBuf::from("relative/path"));
+        assert_eq!(ans, None);
+
+        let ans = fs.calc_guest_path_from_dirfd(&None, &PathBuf::from(""));
+        assert_eq!(ans, Some("".into()));
+
+        let ans = fs.calc_guest_path_from_dirfd(
+            &Some(PathBuf::from("/abc")),
+            &PathBuf::from("relative/path"),
+        );
+        assert_eq!(ans, Some("/abc/relative/path".into()));
     }
 }

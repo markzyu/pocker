@@ -83,9 +83,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let path_bytes =
                 ptrace_client.execute(move || (read_bytes_until_zero)(pid, arg_i))??;
             let orig_path = path_from_bytes(path_bytes)?;
-            let guest_path = self
-                .fs
-                .calc_guest_path_from_dirfd(&dirfd_path, &orig_path)?;
+            let guest_path = self.fs.calc_guest_path_from_dirfd(&dirfd_path, &orig_path);
 
             let Some(guest_path) = guest_path else {
                 event!(
