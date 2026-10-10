@@ -23,6 +23,8 @@ mod aug_waitpid;
 mod common;
 mod config;
 mod fs;
+mod fs_metadata;
+mod fs_remap;
 mod handler_async;
 mod handler_sync;
 mod syscalls;
