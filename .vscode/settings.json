@@ -4,8 +4,7 @@
   "rust-analyzer.checkOnSave": false,
   "cursor.cpp.disabledLanguages": [
     "markdown",
-    "plaintext",
-    "rust"
+    "plaintext"
   ],
   "rust-analyzer.check.overrideCommand": [
     "cargo",
