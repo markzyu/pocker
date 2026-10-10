@@ -12,6 +12,7 @@
 
 use crate::TraceeHandlerConsts;
 use crate::common::{PathAction, RootFsMetadata, SysAugError, SyscallInfo, display_err};
+use crate::config::init_passthroughs_from_config;
 use nix::unistd::Pid;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -32,10 +33,19 @@ pub struct FileSystem {
 // Calculate real path of file based on its path in rootfs
 impl FileSystem {
     pub fn new(consts: TraceeHandlerConsts, pid: Pid) -> Self {
+        let mut path_prefix: Option<PathBuf> = None;
+        let mut path_prefix_excludes: Vec<PathBuf> = Vec::new();
+
+        // Derive internal states from RootfsConfig.passthroughs and SysAugArgs.chroot
+        if consts.args.chroot.is_some() {
+            init_passthroughs_from_config(&mut path_prefix_excludes, &consts.config.rootfs);
+            path_prefix = consts.args.chroot.clone();
+        }
+
         Self {
             consts,
-            path_prefix: RefCell::default(),
-            path_prefix_excludes: RefCell::default(),
+            path_prefix: RefCell::new(path_prefix),
+            path_prefix_excludes: RefCell::new(path_prefix_excludes),
             pid: pid,
         }
     }
@@ -452,8 +462,8 @@ pub fn path_from_bytes(mut path_bytes: Vec<u8>) -> Result<PathBuf, SysAugError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::*;
     use crate::syscalls::get_syscall;
+    use crate::{SysAugArgs, config::*};
     use regex::bytes::Regex;
 
     // returns (fs, absolute path of staging dir / of rootfs)
@@ -469,15 +479,15 @@ mod tests {
 
         let err = "Failed to setup tests";
         let staging_absolute = dir.canonicalize().expect(err);
-        let fs = FileSystem {
-            consts: TraceeHandlerConsts {
-                config,
+        let consts = TraceeHandlerConsts {
+            config,
+            args: SysAugArgs {
+                chroot: Some(staging_absolute.clone()),
                 ..Default::default()
             },
-            path_prefix: RefCell::new(Some(staging_absolute.clone())),
-            path_prefix_excludes: RefCell::new(vec![]),
-            pid: Pid::this(),
+            ..Default::default()
         };
+        let fs = FileSystem::new(consts, Pid::this());
         (fs, staging_absolute)
     }
 
@@ -643,5 +653,89 @@ mod tests {
         assert_eq!(ans1, PathAction::ELOOP);
         assert_eq!(ans2, PathAction::ELOOP);
         assert_eq!(ans3, PathAction::ELOOP);
+    }
+
+    fn setup_with_passthrough_config() -> (FileSystem, PathBuf) {
+        let config = SysAugConfig {
+            rootfs: RootfsConfig {
+                passthroughs: vec![String::from("/prefix1")],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        setup_with_config(config)
+    }
+
+    #[test]
+    fn test_calc_real_path_with_passthrough_path() {
+        let (fs, dir) = setup_with_passthrough_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        let path1 = PathBuf::from("/prefix1/file123.so");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+
+        let path2 = PathBuf::from("/prefix123/file123.so");
+        let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
+
+        assert_eq!(ans1, PathAction::None);
+        assert_eq!(
+            ans2,
+            PathAction::Override(dir.join("prefix123").join("file123.so"))
+        );
+    }
+
+    #[test]
+    fn test_calc_real_path_with_symlink_to_passthrough_path() {
+        let (fs, dir) = setup_with_passthrough_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        let err = "Failed to setup tests";
+        std::os::unix::fs::symlink("/prefix1/file123.so", dir.join("y")).expect(err);
+
+        let path1 = PathBuf::from("/y");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans1, PathAction::Override("/prefix1/file123.so".into()));
+    }
+
+    fn setup_with_exclusion_config() -> (FileSystem, PathBuf) {
+        let config = SysAugConfig {
+            rootfs: RootfsConfig {
+                rename_host_paths: vec![RenameConfig {
+                    regex: Regex::new(r"^(.*)/x$").unwrap(),
+                    replacement: None,
+                    should_replace_all: false,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        setup_with_config(config)
+    }
+
+    #[test]
+    fn test_calc_real_path_with_excluded_path() {
+        let (fs, _) = setup_with_exclusion_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        let path1 = PathBuf::from("/x");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans1, PathAction::HidePath);
+    }
+
+    #[test]
+    fn test_calc_real_path_with_excluded_target_of_symlink() {
+        let (fs, dir) = setup_with_exclusion_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        let err = "Failed to setup tests";
+        std::os::unix::fs::symlink("/x", dir.join("y")).expect(err);
+
+        let path1 = PathBuf::from("/y");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans1, PathAction::HidePath);
     }
 }

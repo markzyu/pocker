@@ -11,7 +11,7 @@
 // GNU General Public License for more details.
 
 use crate::common::{PTRACE_EVENT_SECCOMP, SysAugArgs, SysAugError, display_err, rwlock_read};
-use crate::config::{SysAugConfig, init_passthroughs_from_config, init_perms_ids_from_config};
+use crate::config::{SysAugConfig, init_perms_ids_from_config};
 use crate::fs::FileSystem;
 use crate::handler_async::{AsyncNotifications, AsyncTraceeHandler};
 use krsm::AsyncYielder;
@@ -227,12 +227,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> TraceeHandler<PtraceClient> {
 
         // Initialize async states from config json
         init_perms_ids_from_config(&async_handlers.perms_ids, &self.consts.config.perms)?;
-        if self.consts.args.chroot.is_some() {
-            let mut path_prefix = async_handlers.fs.path_prefix.borrow_mut();
-            let mut path_prefix_excludes = async_handlers.fs.path_prefix_excludes.borrow_mut();
-            init_passthroughs_from_config(&mut *path_prefix_excludes, &self.consts.config.rootfs);
-            *path_prefix = self.consts.args.chroot.clone();
-        }
 
         let mut main_loop_future = pin!(async_handlers.all_tracee_loops());
 
