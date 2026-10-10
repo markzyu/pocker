@@ -19,6 +19,17 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::{Level, event};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum RenameAccessMode {
+    /// Files are simply renamed to the new path.
+    Default,
+
+    /// Files are renamed if readonly. Otherwise, a copy is made in the rootfs.
+    /// (Requires a `rootfs` or `chroot` to be set)
+    CopyOnWrite,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RenameConfig {
@@ -31,10 +42,17 @@ pub(crate) struct RenameConfig {
     /// If false, replace only the earliest match.
     #[serde(default = "default_should_replace_all")]
     pub(crate) should_replace_all: bool,
+
+    #[serde(default = "default_rename_mode")]
+    pub(crate) access_mode: RenameAccessMode,
 }
 
 fn default_should_replace_all() -> bool {
     false
+}
+
+fn default_rename_mode() -> RenameAccessMode {
+    RenameAccessMode::Default
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -281,6 +299,7 @@ pub(crate) fn init_rename_rules_from_config(
             regex: dst_regex,
             replacement: Some(replacement),
             should_replace_all: false,
+            access_mode: RenameAccessMode::CopyOnWrite,
         });
     }
     Ok(())

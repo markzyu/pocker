@@ -109,7 +109,7 @@ impl FileSystem {
             return Ok(());
         }
         if let Some(meta_path) = self.get_metadata_path(path)? {
-            // First, consider hardlink counter
+            // First, consider hardlink counter and CopyOnWrite mode
             let should_keep = self.save_metadata(path, |x| {
                 if let Some(val) = x.hardlink_counter
                     && val > 1
@@ -117,7 +117,7 @@ impl FileSystem {
                     x.hardlink_counter = Some(val - 1);
                     return true;
                 }
-                false
+                x.is_cow == Some(true)
             })?;
             if should_keep == Some(true) {
                 return Ok(());
@@ -172,12 +172,18 @@ impl FileSystem {
             return Ok(None);
         };
 
-        if !path.exists() {
-            return Ok(None);
-        }
+        let maybe_canonical_path = if !path.exists() {
+            if path.is_absolute() {
+                std::path::absolute(path).ok()
+            } else {
+                None
+            }
+        } else {
+            // Note: canonicalize() will also resolve ALL symlinks
+            path.canonicalize().ok()
+        };
 
-        // Note: canonicalize() will also resolve ALL symlinks
-        let Ok(canonical_path) = path.canonicalize() else {
+        let Some(canonical_path) = maybe_canonical_path else {
             return Ok(None);
         };
 

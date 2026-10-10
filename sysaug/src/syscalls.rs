@@ -75,6 +75,7 @@ macro_rules! define_fileperms_syscall {
             num: $name,
             sets_file_perms: Some($perm_type),
             file_perms_position: Some($perms_pos),
+            writes_file: true,
             ..default_syscall_info()
         });
     };
@@ -159,6 +160,7 @@ macro_rules! define_paths_fileperms_syscall {
             getdents_bits: None,
             sets_file_perms: Some($perm_type),
             file_perms_position: Some($perms_pos),
+            writes_file: true,
             ..default_syscall_info()
         });
     };
@@ -270,6 +272,7 @@ macro_rules! define_dirfd_fileperms_syscall {
             getdents_bits: None,
             sets_file_perms: Some($perm_type),
             file_perms_position: Some($perms_pos),
+            writes_file: true,
             ..default_syscall_info()
         });
     };
@@ -358,6 +361,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         val.creates_hardlink = Some((1, 3));
         val.flags = Some(4);
         val.flag_dont_follow_symlink = Some(libc::AT_SYMLINK_NOFOLLOW as usize);
+        val.writes_file = true;
     }
 
     define_dirfd_fileperms_syscall!(libc::SYS_fchmodat, 2, 0, PermType::Chmod, 2, iter, next);
@@ -372,6 +376,8 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         val.flags = Some(2);
         val.flag_dont_follow_symlink = Some(libc::AT_SYMLINK_NOFOLLOW as usize);
         val.should_follow_hardlink = true;
+        val.flag_writes_file =
+            Some((libc::O_CREAT | libc::O_WRONLY | libc::O_RDWR | libc::O_APPEND) as usize);
     }
 
     define_dirfd_syscall!(libc::SYS_readlinkat, 2, 0, iter, next);
@@ -384,6 +390,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
     if let Some(val) = iter[next].as_mut() {
         val.dont_follow_symlink = true;
         val.renames_metadata = Some((1, 3));
+        val.writes_file = true;
     }
 
     define_dirfd2_syscall!(libc::SYS_renameat2, 10, iter, next);
@@ -392,12 +399,14 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         val.dont_follow_symlink = true;
         val.flags = Some(4);
         val.renames_metadata = Some((1, 3));
+        val.writes_file = true;
     }
 
     define_dirfd_syscall!(libc::SYS_symlinkat, 4, 1, iter, next);
     if let Some(val) = iter[next].as_mut() {
         val.dont_follow_symlink = true;
         val.creates_symlink = Some((0, 2));
+        val.writes_file = true;
     }
 
     define_dirfd_deletion_syscall!(libc::SYS_unlinkat, 2, 0, DelType::File, iter, next);
@@ -438,6 +447,10 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
     #[cfg(not(all(target_os = "android", target_arch = "aarch64")))]
     {
         define_paths_syscall!(libc::SYS_truncate, 1, iter, next);
+        if let Some(val) = iter[next].as_mut() {
+            val.writes_file = true;
+        }
+
         define_paths_syscall!(libc::SYS_statfs, 1, iter, next);
     }
 
@@ -463,6 +476,10 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
     #[cfg(target_arch = "arm")]
     {
         define_paths_syscall!(libc::SYS_chown32, 1, iter, next);
+        if let Some(val) = iter[next].as_mut() {
+            val.writes_file = true;
+        }
+
         define_paths_syscall!(libc::SYS_stat64, 1, iter, next);
         if let Some(val) = iter[next].as_mut() {
             val.stat64_buf_position = Some(1);
@@ -483,10 +500,14 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
 
         define_paths_syscall!(libc::SYS_statfs64, 1, iter, next);
         define_paths_syscall!(libc::SYS_truncate64, 1, iter, next);
+        if let Some(val) = iter[next].as_mut() {
+            val.writes_file = true;
+        }
 
         define_paths_syscall!(libc::SYS_lchown32, 1, iter, next);
         if let Some(val) = iter[next].as_mut() {
             val.dont_follow_symlink = true;
+            val.writes_file = true;
         }
 
         define_paths_syscall!(libc::SYS_lstat64, 1, iter, next);
@@ -504,6 +525,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         if let Some(val) = iter[next].as_mut() {
             val.dont_follow_symlink = true;
             val.renames_metadata = Some((0, 1));
+            val.writes_file = true;
         }
 
         define_paths_syscall!(libc::SYS_utime, 1, iter, next);
@@ -548,6 +570,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         define_paths_syscall!(libc::SYS_link, 3, iter, next);
         if let Some(val) = iter[next].as_mut() {
             val.creates_hardlink = Some((0, 1));
+            val.writes_file = true;
         }
 
         define_paths_syscall!(libc::SYS_open, 1, iter, next);
@@ -557,6 +580,8 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
             val.flags = Some(1);
             val.flag_dont_follow_symlink = Some(libc::AT_SYMLINK_NOFOLLOW as usize);
             val.should_follow_hardlink = true;
+            val.flag_writes_file =
+                Some((libc::O_CREAT | libc::O_WRONLY | libc::O_RDWR | libc::O_APPEND) as usize);
         }
 
         define_paths_syscall!(libc::SYS_readlink, 1, iter, next);
@@ -588,6 +613,7 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
         if let Some(val) = iter[next].as_mut() {
             val.dont_follow_symlink = true;
             val.creates_symlink = Some((0, 1));
+            val.writes_file = true;
         }
 
         define_paths_deletion_syscall!(libc::SYS_unlink, 1, DelType::File, iter, next);

@@ -11,6 +11,7 @@
 // GNU General Public License for more details.
 
 use crate::common::{PathAction, SysAugError, SyscallInfo};
+use crate::config::RenameAccessMode;
 use crate::fs::FileSystem;
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -43,6 +44,7 @@ impl FileSystem {
         &self,
         orig_path: &Path,
         syscall: &SyscallInfo,
+        args: &[usize],
     ) -> Result<PathAction, SysAugError> {
         let mut new_path = PathAction::None;
         let prefix_maybe = self.path_prefix.borrow();
@@ -56,7 +58,7 @@ impl FileSystem {
             }
         }
 
-        self.get_mod_path(syscall, orig_path, new_path, false)
+        self.get_mod_path(syscall, args, orig_path, new_path, false)
     }
 
     // Calculate real path of file + following symlinks that use fake paths
@@ -68,7 +70,7 @@ impl FileSystem {
         args: &[usize],
     ) -> Result<PathAction, SysAugError> {
         visited.insert(orig_path.into());
-        let action = self.calc_real_path_simple(orig_path, syscall)?;
+        let action = self.calc_real_path_simple(orig_path, syscall, args)?;
         if let PathAction::Override(real_path) = &action {
             let result = self.calc_follow_symlink(real_path, syscall, &mut visited, args)?;
             match result {
@@ -157,7 +159,8 @@ impl FileSystem {
     // perspective
     pub fn get_mod_path(
         &self,
-        _syscall: &SyscallInfo,
+        syscall: &SyscallInfo,
+        args: &[usize],
         orig_path: &Path,
         initial_override: PathAction,
         reverse: bool,
@@ -173,19 +176,46 @@ impl FileSystem {
             self.rename_host_paths.borrow()
         };
         for config in rename_map.iter() {
-            if config.regex.is_match(bytes_str) {
-                let Some(ref replacement) = config.replacement else {
-                    return Ok(PathAction::HidePath);
-                };
-                let replacement_bytes = replacement.as_bytes();
-                let replacement = if config.should_replace_all {
-                    config.regex.replace_all(bytes_str, replacement_bytes)
-                } else {
-                    config.regex.replace(bytes_str, replacement_bytes)
-                };
-                let os_str = OsString::from_vec(replacement.into());
-                return Ok(PathAction::Override(os_str.into()));
+            if !config.regex.is_match(bytes_str) {
+                continue;
             }
+            let Some(ref replacement) = config.replacement else {
+                return Ok(PathAction::HidePath);
+            };
+
+            // Handle CopyOnWrite mode
+            let mut cow_skip = false;
+            if config.access_mode == RenameAccessMode::CopyOnWrite && !reverse {
+                let meta_exists = self.get_metadata_path(orig_path)?.is_some();
+                if orig_path.exists() || meta_exists {
+                    cow_skip = true;
+                }
+                if syscall.writes_file {
+                    cow_skip = true;
+                }
+                if let Some(flag_position) = syscall.flags
+                    && let Some(flag) = syscall.flag_writes_file
+                    && (args[flag_position] & flag) != 0
+                {
+                    cow_skip = true;
+                }
+            }
+            if cow_skip {
+                self.save_metadata(orig_path, |x| {
+                    x.is_cow = Some(true);
+                })?;
+                return Ok(PathAction::None);
+            }
+
+            // Handle Default mode
+            let replacement_bytes = replacement.as_bytes();
+            let replacement = if config.should_replace_all {
+                config.regex.replace_all(bytes_str, replacement_bytes)
+            } else {
+                config.regex.replace(bytes_str, replacement_bytes)
+            };
+            let os_str = OsString::from_vec(replacement.into());
+            return Ok(PathAction::Override(os_str.into()));
         }
         Ok(initial_override)
     }
@@ -386,6 +416,7 @@ mod tests {
                     regex: Regex::new(r"^(.*)/x$").unwrap(),
                     replacement: Some(String::from("$1/xy")),
                     should_replace_all: false,
+                    access_mode: RenameAccessMode::Default,
                 }],
                 ..Default::default()
             },
@@ -546,6 +577,7 @@ mod tests {
                     regex: Regex::new(r"^(.*)/x$").unwrap(),
                     replacement: None,
                     should_replace_all: false,
+                    access_mode: RenameAccessMode::Default,
                 }],
                 ..Default::default()
             },

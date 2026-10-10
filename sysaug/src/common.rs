@@ -229,6 +229,11 @@ pub struct RootFsMetadata {
     pub chown_owner: Option<usize>,
     pub chown_group: Option<usize>,
 
+    /// This marker means the file is a copy from an overlay mount.
+    /// And it means "if the file is deleted, the metadata should stay."
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_cow: Option<bool>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_symlink: Option<bool>,
 
@@ -282,6 +287,8 @@ pub struct SyscallInfo {
     pub sets_file_perms: Option<PermType>,
     pub file_perms_position: Option<u8>,
     pub deletion_type: Option<DelType>,
+    pub writes_file: bool,
+    pub flag_writes_file: Option<usize>,
     pub dont_follow_symlink: bool,
     pub flag_dont_follow_symlink: Option<usize>,
 
@@ -342,6 +349,8 @@ pub const fn default_syscall_info() -> SyscallInfo {
         sets_file_perms: None,
         file_perms_position: None,
         deletion_type: None,
+        writes_file: false,
+        flag_writes_file: None,
         dont_follow_symlink: false,
         flag_dont_follow_symlink: None,
         creates_symlink: None,

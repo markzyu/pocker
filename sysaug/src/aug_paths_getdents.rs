@@ -82,9 +82,10 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             entry.normalize_type();
             let orig_path_buf = path_from_bytes(entry.get_name().to_vec())?;
             let orig_path: &Path = orig_path_buf.as_path();
+            let args = [regs.arg0, regs.arg1, regs.arg2, regs.arg3];
             let action = self
                 .fs
-                .get_mod_path(syscall, orig_path, PathAction::None, true)?;
+                .get_mod_path(syscall, &args, orig_path, PathAction::None, true)?;
             let delete = match &action {
                 PathAction::Override(override_path) => {
                     let bytes = override_path.as_os_str().as_bytes();
