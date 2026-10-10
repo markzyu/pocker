@@ -17,6 +17,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
+use tracing::{Level, event};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -247,9 +248,42 @@ pub struct SysAugConfig {
     #[serde(default)]
     pub(crate) perms: PermsConfig,
 
-    /// The last layer is the "topmost" mount
+    /// This is a shorthand. You can achieve the same effect using `rootfs.rename_host_paths`
+    ///
+    /// The last layer listed by index, is the "topmost" mount amongst the overlays
     #[serde(default)]
     pub(crate) mounts: Vec<MountConfig>,
+}
+
+pub(crate) fn init_rename_rules_from_config(
+    rename_host_paths: &mut Vec<RenameConfig>,
+    rename_guest_paths: &mut Vec<RenameConfig>,
+    config: &SysAugConfig,
+) -> Result<(), SysAugError> {
+    rename_host_paths.extend(config.rootfs.rename_host_paths.iter().map(Clone::clone));
+    rename_guest_paths.extend(config.rootfs.rename_guest_paths.iter().map(Clone::clone));
+
+    for mount in config.mounts.iter().rev() {
+        if mount.fstype != "overlay" {
+            event!(
+                Level::WARN,
+                "Ignoring unsupported mount type {} from config",
+                mount.fstype
+            );
+            continue;
+        }
+
+        let dst = regex::escape(&mount.target);
+        let dst_regex = format!("^{}(/?|/.*)$", dst);
+        let dst_regex = Regex::new(&dst_regex).map_err(SysAugError::InvalidMountRegex)?;
+        let replacement = format!("{}$1", mount.source);
+        rename_host_paths.push(RenameConfig {
+            regex: dst_regex,
+            replacement: Some(replacement),
+            should_replace_all: false,
+        });
+    }
+    Ok(())
 }
 
 impl Default for SysAugConfig {

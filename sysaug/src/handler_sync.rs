@@ -200,7 +200,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> TraceeHandler<PtraceClient> {
 
             yielder_syscall: AsyncYielder::default(),
             notifiers: AsyncNotifications::default(),
-            fs: FileSystem::new(consts, pid),
+            fs: FileSystem::new(consts, pid)?,
 
             perms_ids: RefCell::default(),
 

@@ -166,6 +166,9 @@ pub enum SysAugError {
 
     #[error("Failed to stat the backing file of a hardlink: {0}")]
     StatHardlinkIO(std::io::Error),
+
+    #[error("Invalid mount regex: {0}")]
+    InvalidMountRegex(regex::Error),
 }
 
 #[derive(Clone, Debug, Default)]

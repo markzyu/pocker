@@ -12,7 +12,7 @@
 
 use crate::TraceeHandlerConsts;
 use crate::common::{PathAction, RootFsMetadata, SysAugError, SyscallInfo, display_err};
-use crate::config::init_passthroughs_from_config;
+use crate::config::{RenameConfig, init_passthroughs_from_config, init_rename_rules_from_config};
 use nix::unistd::Pid;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -24,15 +24,21 @@ use tracing::{Level, event};
 
 pub struct FileSystem {
     consts: TraceeHandlerConsts,
+    /// The editable prefix, in case factors other than configs are involved
     pub path_prefix: RefCell<Option<PathBuf>>,
+    /// The editable exclude list, in case factors other than configs are involved
     pub path_prefix_excludes: RefCell<Vec<PathBuf>>,
+    /// The editable host rename rules, in case factors other than configs are involved
+    pub rename_host_paths: RefCell<Vec<RenameConfig>>,
+    /// The editable guest rename rules, in case factors other than configs are involved
+    pub rename_guest_paths: RefCell<Vec<RenameConfig>>,
     pid: Pid,
 }
 
 // Common helper functions used by aug_*.rs
 // Calculate real path of file based on its path in rootfs
 impl FileSystem {
-    pub fn new(consts: TraceeHandlerConsts, pid: Pid) -> Self {
+    pub fn new(consts: TraceeHandlerConsts, pid: Pid) -> Result<Self, SysAugError> {
         let mut path_prefix: Option<PathBuf> = None;
         let mut path_prefix_excludes: Vec<PathBuf> = Vec::new();
 
@@ -42,12 +48,22 @@ impl FileSystem {
             path_prefix = consts.args.chroot.clone();
         }
 
-        Self {
+        let mut rename_host_paths: Vec<RenameConfig> = Vec::new();
+        let mut rename_guest_paths: Vec<RenameConfig> = Vec::new();
+        init_rename_rules_from_config(
+            &mut rename_host_paths,
+            &mut rename_guest_paths,
+            &consts.config,
+        )?;
+
+        Ok(Self {
             consts,
             path_prefix: RefCell::new(path_prefix),
             path_prefix_excludes: RefCell::new(path_prefix_excludes),
+            rename_host_paths: RefCell::new(rename_host_paths),
+            rename_guest_paths: RefCell::new(rename_guest_paths),
             pid: pid,
-        }
+        })
     }
 
     // -----------------------------------------------------------------------------
@@ -428,11 +444,11 @@ impl FileSystem {
         };
         let bytes_str = curr_path.as_os_str().as_encoded_bytes();
         let rename_map = if reverse {
-            &self.consts.config.rootfs.rename_guest_paths
+            self.rename_guest_paths.borrow()
         } else {
-            &self.consts.config.rootfs.rename_host_paths
+            self.rename_host_paths.borrow()
         };
-        for config in rename_map {
+        for config in rename_map.iter() {
             if config.regex.is_match(bytes_str) {
                 let Some(ref replacement) = config.replacement else {
                     return Ok(PathAction::HidePath);
@@ -540,7 +556,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let fs = FileSystem::new(consts, Pid::this());
+        let fs = FileSystem::new(consts, Pid::this()).unwrap();
         (fs, staging_absolute)
     }
 
