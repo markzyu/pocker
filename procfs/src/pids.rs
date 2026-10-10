@@ -25,7 +25,8 @@ pub fn getfd_path(pid: nix::unistd::Pid, fd: isize) -> Result<Option<PathBuf>, P
     path.push("fd");
     path.push(fd.to_string());
     match path.read_link() {
-        Ok(ans) => Ok(Some(ans)),
+        Ok(ans) if ans.is_absolute() => Ok(Some(ans)),
+        Ok(_) => Ok(None),
         Err(ref e) if e.kind() == ErrorKind::NotFound => Ok(None),
         Err(e) => Err(ProcfsError::IO(e)),
     }

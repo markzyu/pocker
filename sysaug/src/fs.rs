@@ -449,6 +449,59 @@ impl FileSystem {
         }
         Ok(initial_override)
     }
+
+    /// Consider dirfd (which is a host path) and return the guest path, or None if not found.
+    ///
+    /// For this to work properly,
+    ///
+    /// * The `dirfd_path` should be the current workdir if syscall has no dirfd.
+    /// * The `dirfd_path` should be the current workdir if dirfd is AT_FDCWD.
+    /// * The `dirfd_path` should be Some("/absolute/path") for files.
+    /// * The `dirfd_path` should be None for pipes and other non-file FDs.
+    pub fn calc_guest_path_from_dirfd(
+        &self,
+        dirfd_path: &Option<PathBuf>,
+        orig_path: &PathBuf,
+    ) -> Result<Option<PathBuf>, SysAugError> {
+        // Consider dirfd
+        let empty_path = PathBuf::from("");
+        let dirfd_path = dirfd_path.as_ref().unwrap_or(&empty_path);
+        let orig_path = if orig_path.as_os_str().is_empty() {
+            // In case of AT_EMPTY_PATH/empty relative path, just pass dirfd_path only
+            dirfd_path.clone()
+        } else {
+            // Note that, if orig_path is absolute, then dirfd_path is ignored
+            dirfd_path.join(&orig_path)
+        };
+
+        if orig_path.as_os_str().is_empty() {
+            // In case of AT_EMPTY_PATH with a non-file FD, pass the empty string as is
+            return Ok(Some(orig_path));
+        }
+
+        // If the path is not absolute, then inform downstream of ENOENT
+        if orig_path.is_relative() {
+            return Ok(None);
+        }
+        let Ok(orig_path) = std::path::absolute(&orig_path) else {
+            return Ok(None);
+        };
+
+        // Strip the prefix if it matches
+        let path_prefix = {
+            let default = PathBuf::from("/");
+            let guard = self.path_prefix.borrow();
+            guard.as_ref().unwrap_or(&default).clone()
+        };
+        if let Ok(stripped) = orig_path.strip_prefix(path_prefix) {
+            let root = PathBuf::from("/");
+            return Ok(Some(root.join(stripped)));
+        }
+
+        // Otherwise, return the path as is
+        // (It could match a rename rule or an exclusion rule)
+        Ok(Some(orig_path))
+    }
 }
 
 pub fn path_from_bytes(mut path_bytes: Vec<u8>) -> Result<PathBuf, SysAugError> {

@@ -76,20 +76,37 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 continue;
             }
 
-            let dirfd_path = self
-                .get_dirfd_path(&entry_regs, syscall, i)?
-                .unwrap_or("".into());
+            let dirfd_path = self.get_dirfd_path(&entry_regs, syscall, i)?;
 
             // Read orig_path from registers
             // TODO: This can cause buffer overflow if tracee is malicious.
             let path_bytes =
                 ptrace_client.execute(move || (read_bytes_until_zero)(pid, arg_i))??;
-            let orig_path_buf = path_from_bytes(path_bytes)?;
+            let orig_path = path_from_bytes(path_bytes)?;
+            let guest_path = self
+                .fs
+                .calc_guest_path_from_dirfd(&dirfd_path, &orig_path)?;
+
+            let Some(guest_path) = guest_path else {
+                event!(
+                    Level::WARN,
+                    "guest path not found for {:?} in dirfd {:?}",
+                    &orig_path,
+                    &dirfd_path
+                );
+                let retval = -libc::ENOENT as usize;
+                return Ok(AugmentState {
+                    entry_regs: RefCell::new(entry_regs),
+                    orig_args,
+                    save_paths: RefCell::new(save_paths),
+                    need_skip_syscall: RefCell::new(Some(retval)),
+                    need_write_paths: RefCell::new(need_write_paths),
+                    need_write_regs: RefCell::new(false),
+                });
+            };
 
             // Calculate path_action, and maybe update tracee
-            let path_action = self
-                .fs
-                .calc_real_path(&orig_path_buf, syscall, &orig_args)?;
+            let path_action = self.fs.calc_real_path(&guest_path, syscall, &orig_args)?;
 
             let final_path = match path_action {
                 PathAction::Override(new_path_val) => {
@@ -107,16 +124,9 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                         need_write_regs: RefCell::new(false),
                     });
                 }
-                _ => orig_path_buf,
+                _ => guest_path,
             };
 
-            // Consider dirfd
-            let final_path = if final_path.as_os_str().is_empty() {
-                // In case of AT_EMPTY_PATH/empty relative path, just pass dirfd_path only
-                dirfd_path.to_path_buf()
-            } else {
-                dirfd_path.join(&final_path)
-            };
             save_paths[i] = Some(final_path);
         }
 
