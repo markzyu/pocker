@@ -451,12 +451,13 @@ pub fn path_from_bytes(mut path_bytes: Vec<u8>) -> Result<PathBuf, SysAugError> 
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::config::*;
     use crate::syscalls::get_syscall;
-
-use super::*;
+    use regex::bytes::Regex;
 
     // returns (fs, absolute path of staging dir / of rootfs)
-    fn setup() -> (FileSystem, PathBuf) {
+    fn setup_with_config(config: SysAugConfig) -> (FileSystem, PathBuf) {
         let err = "Failed to setup tests";
         let staging_dir: PathBuf = PathBuf::from("../tests/fixtures/staging");
         let dir = staging_dir.as_path();
@@ -469,16 +470,35 @@ use super::*;
         let err = "Failed to setup tests";
         let staging_absolute = dir.canonicalize().expect(err);
         let fs = FileSystem {
-            consts: TraceeHandlerConsts::default(),
+            consts: TraceeHandlerConsts {
+                config,
+                ..Default::default()
+            },
             path_prefix: RefCell::new(Some(staging_absolute.clone())),
             path_prefix_excludes: RefCell::new(vec![]),
-            pid: Pid::this()
+            pid: Pid::this(),
         };
         (fs, staging_absolute)
     }
 
+    // returns (fs, absolute path of staging dir / of rootfs)
+    fn setup() -> (FileSystem, PathBuf) {
+        setup_with_config(SysAugConfig::default())
+    }
+
     #[test]
-    fn test_calc_real_path_on_rootfs() {
+    fn test_calc_real_path_of_file_on_rootfs() {
+        let (fs, dir) = setup();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        let path1 = PathBuf::from("/x");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans1, PathAction::Override(dir.join("x")));
+    }
+
+    #[test]
+    fn test_calc_real_path_of_link_on_rootfs() {
         let (fs, dir) = setup();
         let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
         let syscall = maybe_syscall.expect("SYS_chdir syscall info");
@@ -506,5 +526,122 @@ use super::*;
         let path1 = PathBuf::from("/y");
         let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
         assert_eq!(ans1, PathAction::Override(expected));
+    }
+
+    #[test]
+    fn test_calc_real_path_of_self_looping_symlink() {
+        let (fs, dir) = setup();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        let err = "Failed to setup tests";
+        std::os::unix::fs::symlink("/a", dir.join("a")).expect(err);
+
+        let path1 = PathBuf::from("/a");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans1, PathAction::ELOOP);
+    }
+
+    #[test]
+    fn test_calc_real_path_of_looping_symlinks() {
+        let (fs, dir) = setup();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        let err = "Failed to setup tests";
+        std::os::unix::fs::symlink("/a", dir.join("b")).expect(err);
+        std::os::unix::fs::symlink("/b", dir.join("a")).expect(err);
+
+        let path1 = PathBuf::from("/a");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+
+        let path2 = PathBuf::from("/b");
+        let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
+
+        assert_eq!(ans1, PathAction::ELOOP);
+        assert_eq!(ans2, PathAction::ELOOP);
+    }
+
+    fn setup_with_rename_config() -> (FileSystem, PathBuf) {
+        let config = SysAugConfig {
+            rootfs: RootfsConfig {
+                rename_host_paths: vec![RenameConfig {
+                    regex: Regex::new(r"^(.*)/x$").unwrap(),
+                    replacement: Some(String::from("$1/xy")),
+                    should_replace_all: false,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        setup_with_config(config)
+    }
+
+    #[test]
+    fn test_calc_real_path_with_rename_only() {
+        let (fs, dir) = setup_with_rename_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        let path1 = PathBuf::from("/prefix/x");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans1, PathAction::Override(dir.join("prefix").join("xy")));
+    }
+
+    #[test]
+    fn test_calc_real_path_with_renamed_target_of_symlink() {
+        let (fs, dir) = setup_with_rename_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        let err = "Failed to setup tests";
+        std::os::unix::fs::symlink("/x", dir.join("y")).expect(err);
+
+        let path1 = PathBuf::from("/y");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans1, PathAction::Override(dir.join("xy")));
+    }
+
+    #[test]
+    fn test_calc_real_path_with_renamed_self_looping_symlink() {
+        let (fs, dir) = setup_with_rename_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        let err = "Failed to setup tests";
+        std::os::unix::fs::symlink("/x", dir.join("xy")).expect(err);
+
+        let path1 = PathBuf::from("/xy");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+
+        let path2 = PathBuf::from("/x");
+        let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
+
+        assert_eq!(ans1, PathAction::ELOOP);
+        assert_eq!(ans2, PathAction::ELOOP);
+    }
+
+    #[test]
+    fn test_calc_real_path_with_renamed_looping_symlinks() {
+        let (fs, dir) = setup_with_rename_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        let err = "Failed to setup tests";
+        std::os::unix::fs::symlink("/a", dir.join("xy")).expect(err);
+        std::os::unix::fs::symlink("/x", dir.join("a")).expect(err);
+
+        let path1 = PathBuf::from("/a");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+
+        let path2 = PathBuf::from("/x");
+        let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
+
+        let path3 = PathBuf::from("/xy");
+        let ans3 = fs.calc_real_path(path3.as_path(), syscall, &[]).unwrap();
+
+        assert_eq!(ans1, PathAction::ELOOP);
+        assert_eq!(ans2, PathAction::ELOOP);
+        assert_eq!(ans3, PathAction::ELOOP);
     }
 }
