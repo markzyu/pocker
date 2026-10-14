@@ -11,7 +11,7 @@
 // GNU General Public License for more details.
 
 use crate::common::{PathAction, SysAugError, SyscallInfo};
-use crate::config::RenameAccessMode;
+use crate::config::{RenameAccessMode, RenameConfig};
 use crate::fs::FileSystem;
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -188,23 +188,10 @@ impl FileSystem {
             };
 
             // Handle CopyOnWrite mode
-            let mut cow_skip = false;
-            if config.access_mode == RenameAccessMode::CopyOnWrite && !reverse {
-                let meta_exists = self.get_metadata_path(orig_path)?.is_some();
-                if orig_path.exists() || meta_exists {
-                    cow_skip = true;
-                }
-                if syscall.writes_file {
-                    cow_skip = true;
-                }
-                if let Some(flag_position) = syscall.flags
-                    && let Some(flag) = syscall.flag_writes_file
-                    && (args[flag_position] & flag) != 0
-                {
-                    cow_skip = true;
-                }
-            }
-            if cow_skip {
+            if !reverse
+                && config.access_mode == RenameAccessMode::CopyOnWrite
+                && self._check_cow(syscall, args, path)?
+            {
                 self.save_metadata(orig_path, |x| {
                     x.is_cow = Some(true);
                 })?;
@@ -222,6 +209,33 @@ impl FileSystem {
             return Ok(PathAction::Override(os_str.into()));
         }
         Ok(initial_override)
+    }
+
+    /// This is a helper function for `get_mod_path`.
+    ///
+    /// It checks a specific syscall, and a path to see whether this
+    /// access is writing to a valid file such that it can be Copy on Write
+    fn _check_cow(
+        &self,
+        syscall: &SyscallInfo,
+        args: &[usize],
+        path: &Path,
+    ) -> Result<bool, SysAugError> {
+        let mut is_cow = false;
+        let meta_exists = self.get_metadata_path(path)?.is_some();
+        if path.exists() || meta_exists {
+            is_cow = true;
+        }
+        if syscall.writes_file {
+            is_cow = true;
+        }
+        if let Some(flag_position) = syscall.flags
+            && let Some(flag) = syscall.flag_writes_file
+            && (args[flag_position] & flag) != 0
+        {
+            is_cow = true;
+        }
+        Ok(is_cow)
     }
 
     /// Consider dirfd (which is a host path) and return the guest path, or None if not found.
