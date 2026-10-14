@@ -52,6 +52,10 @@ impl FileSystem {
             &mut rename_host_paths,
             &mut rename_guest_paths,
             &consts.config,
+            match path_prefix.as_ref() {
+                Some(path) => path.clone(),
+                None => PathBuf::from("/")
+            },
         )?;
 
         Ok(Self {

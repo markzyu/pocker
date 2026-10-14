@@ -236,11 +236,13 @@ impl Default for PermsConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct MountConfig {
-    /// A path on the host OS
+    /// An absolute path on the host OS
     #[serde(default)]
     pub(crate) source: String,
 
-    /// A path on the guest OS
+    /// An absolute path on the guest OS
+    /// 
+    /// This shouldn't a "passthrough" path
     #[serde(default)]
     pub(crate) target: String,
 
@@ -277,6 +279,7 @@ pub(crate) fn init_rename_rules_from_config(
     rename_host_paths: &mut Vec<RenameConfig>,
     rename_guest_paths: &mut Vec<RenameConfig>,
     config: &SysAugConfig,
+    chroot_path: PathBuf
 ) -> Result<(), SysAugError> {
     rename_host_paths.extend(config.rootfs.rename_host_paths.iter().map(Clone::clone));
     rename_guest_paths.extend(config.rootfs.rename_guest_paths.iter().map(Clone::clone));
@@ -291,10 +294,34 @@ pub(crate) fn init_rename_rules_from_config(
             continue;
         }
 
-        let dst = regex::escape(&mount.target);
-        let dst_regex = format!("^{}(/?|/.*)$", dst);
+        // Sanity checks
+        let target_path = PathBuf::from(&mount.target);
+        let source_path = PathBuf::from(&mount.source);
+        if target_path.is_relative() || source_path.is_relative() {
+            continue;
+        }
+        let mut passthroughs = config.rootfs.passthroughs.iter();
+        if passthroughs.any(|p| target_path.starts_with(p)) {
+            return Err(SysAugError::InvalidMountPassthrough(mount.target.clone()));
+        }
+        
+        // Format the target path (a guest path) into a host path
+        let Ok(target_path) = target_path.strip_prefix("/") else {
+            continue;
+        };
+        let target_path = chroot_path.join(target_path);
+        let Some(target_str) = target_path.to_str() else {
+            return Err(SysAugError::InvalidMountUtf8(mount.target.clone()));
+        };
+
+        let dst = regex::escape(target_str);
+        let dst_regex = if dst.ends_with('/') {
+            format!("^{}(.*)$", dst)
+        } else {
+            format!("^{}(/?|/.*)$", dst)
+        };
         let dst_regex = Regex::new(&dst_regex).map_err(SysAugError::InvalidMountRegex)?;
-        let replacement = format!("{}$1", mount.source);
+        let replacement = format!("{}/$1", mount.source);
         rename_host_paths.push(RenameConfig {
             regex: dst_regex,
             replacement: Some(replacement),

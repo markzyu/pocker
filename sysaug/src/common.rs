@@ -169,6 +169,12 @@ pub enum SysAugError {
 
     #[error("Invalid mount regex: {0}")]
     InvalidMountRegex(regex::Error),
+
+    #[error("Invalid mount target: {0} conflicts with passthroughs")]
+    InvalidMountPassthrough(String),
+
+    #[error("Invalid mount target: {0} contains non-utf8 character when fully expanded")]
+    InvalidMountUtf8(String),
 }
 
 #[derive(Clone, Debug, Default)]
