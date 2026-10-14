@@ -24,17 +24,21 @@ impl FileSystem {
     // ------------------------ Path Modifications (Chroot) ------------------------
     // -----------------------------------------------------------------------------
 
+    /// Calculates the host side path of a file according to its guest side path.
+    ///
+    /// Note: If you have a dirfd, please convert it to the guest path, using
+    /// [FileSystem::calc_guest_path_from_dirfd]
     pub fn calc_real_path(
         &self,
-        orig_path: &Path,
+        guest_path: &Path,
         syscall: &SyscallInfo,
         args: &[usize],
     ) -> Result<PathAction, SysAugError> {
-        let result = self.calc_real_path_recurse(orig_path, syscall, HashSet::new(), args)?;
+        let result = self.calc_real_path_recurse(guest_path, syscall, HashSet::new(), args)?;
         event!(
             Level::DEBUG,
             "Following symlink {:?} -> {:?}",
-            orig_path,
+            guest_path,
             &result
         );
         Ok(result)
@@ -228,6 +232,10 @@ impl FileSystem {
     /// * The `dirfd_path` should be the current workdir if dirfd is AT_FDCWD.
     /// * The `dirfd_path` should be Some("/absolute/path") for files.
     /// * The `dirfd_path` should be None for pipes and other non-file FDs.
+    ///
+    /// The resulting "guest" path will not be applied with the `rename_guest_paths` config.
+    /// This function is meant to provide the path input for [FileSystem::calc_real_path]. That
+    /// function will then apply `rename_host_paths` to the final result.
     pub fn calc_guest_path_from_dirfd(
         &self,
         dirfd_path: &Option<PathBuf>,
