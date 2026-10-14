@@ -187,18 +187,7 @@ impl FileSystem {
                 return Ok(PathAction::HidePath);
             };
 
-            // Handle CopyOnWrite mode
-            if !reverse
-                && config.access_mode == RenameAccessMode::CopyOnWrite
-                && self._check_cow(syscall, args, path)?
-            {
-                self.save_metadata(orig_path, |x| {
-                    x.is_cow = Some(true);
-                })?;
-                return Ok(initial_override);
-            }
-
-            // Handle Default mode
+            // Calculate the new path
             let replacement_bytes = replacement.as_bytes();
             let replacement = if config.should_replace_all {
                 config.regex.replace_all(bytes_str, replacement_bytes)
@@ -206,7 +195,18 @@ impl FileSystem {
                 config.regex.replace(bytes_str, replacement_bytes)
             };
             let os_str = OsString::from_vec(replacement.into());
-            return Ok(PathAction::Override(os_str.into()));
+            let new_path: PathBuf = os_str.into();
+
+            // Handle CopyOnWrite mode
+            if !reverse && self._check_cow(config, syscall, args, curr_path, &new_path)? {
+                self.save_metadata(orig_path, |x| {
+                    x.is_cow = Some(true);
+                })?;
+                return Ok(initial_override);
+            }
+
+            // Handle Default mode
+            return Ok(PathAction::Override(new_path));
         }
         Ok(initial_override)
     }
@@ -215,12 +215,25 @@ impl FileSystem {
     ///
     /// It checks a specific syscall, and a path to see whether this
     /// access is writing to a valid file such that it can be Copy on Write
+    ///
+    /// path is the original host path.
+    /// new_path is the host path if mapped via the current overlayfs
     fn _check_cow(
         &self,
+        config: &RenameConfig,
         syscall: &SyscallInfo,
         args: &[usize],
         path: &Path,
+        new_path: &PathBuf,
     ) -> Result<bool, SysAugError> {
+        if config.access_mode != RenameAccessMode::CopyOnWrite {
+            return Ok(false);
+        }
+
+        if !new_path.exists() {
+            return Ok(false);
+        }
+
         let mut is_cow = false;
         let meta_exists = self.get_metadata_path(path)?.is_some();
         if path.exists() || meta_exists {
@@ -316,9 +329,8 @@ mod tests {
         }
         std::fs::create_dir_all(dir).expect(err);
         std::fs::write(dir.join("x"), "123").expect(err);
-
-        let err = "Failed to setup tests";
         let staging_absolute = dir.canonicalize().expect(err);
+
         let consts = TraceeHandlerConsts {
             config,
             args: SysAugArgs {
@@ -591,6 +603,67 @@ mod tests {
         let path1 = PathBuf::from("/y");
         let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
         assert_eq!(ans1, PathAction::Override(dir.join("y")));
+    }
+
+    fn setup_with_cow_overlays_config() -> (FileSystem, PathBuf, PathBuf) {
+        let err = "Failed to setup tests";
+        let overlays_dir: PathBuf = PathBuf::from("../tests/fixtures/staging.overlays");
+        let dir = overlays_dir.as_path();
+        if dir.exists() {
+            std::fs::remove_dir_all(dir).expect(err);
+        }
+        std::fs::create_dir_all(dir).expect(err);
+        let overlays_dir = dir.canonicalize().expect(err);
+
+        let overlay1 = overlays_dir.join("overlay1");
+        let overlay2 = overlays_dir.join("overlay2");
+        let overlay3 = overlays_dir.join("overlay3");
+
+        std::fs::create_dir_all(&overlay1).expect(err);
+        std::fs::create_dir_all(&overlay2).expect(err);
+        std::fs::create_dir_all(&overlay3).expect(err);
+
+        std::fs::write(overlay1.join("x"), "").expect(err);
+        std::fs::write(overlay2.join("x"), "").expect(err);
+        std::fs::write(overlay3.join("x"), "").expect(err);
+
+        let config = SysAugConfig {
+            mounts: vec![
+                MountConfig {
+                    source: overlay1.to_str().expect(err).into(),
+                    target: String::from("/"),
+                    fstype: String::from("overlay"),
+                },
+                MountConfig {
+                    source: overlay2.to_str().expect(err).into(),
+                    target: String::from("/mnt/abc"),
+                    fstype: String::from("overlay"),
+                },
+                MountConfig {
+                    source: overlay3.to_str().expect(err).into(),
+                    target: String::from("/"),
+                    fstype: String::from("overlay"),
+                },
+            ],
+            ..Default::default()
+        };
+        let (fs, staging_dir) = setup_with_config(config);
+        (fs, staging_dir, overlays_dir)
+    }
+
+    #[test]
+    fn test_calc_real_path_with_cow_overlays() {
+        let (fs, _, dir) = setup_with_cow_overlays_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        let path1 = PathBuf::from("/x");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans1, PathAction::Override(dir.join("overlay3").join("x")));
+
+        let path2 = PathBuf::from("/mnt/abc/x");
+        let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans2, PathAction::Override(dir.join("overlay2").join("x")));
     }
 
     fn setup_with_exclusion_config() -> (FileSystem, PathBuf) {
