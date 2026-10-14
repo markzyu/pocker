@@ -195,7 +195,7 @@ impl FileSystem {
                 self.save_metadata(orig_path, |x| {
                     x.is_cow = Some(true);
                 })?;
-                return Ok(PathAction::None);
+                return Ok(initial_override);
             }
 
             // Handle Default mode
