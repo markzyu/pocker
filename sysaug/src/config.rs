@@ -242,7 +242,10 @@ pub(crate) struct MountConfig {
 
     /// An absolute path on the guest OS
     ///
-    /// This shouldn't a "passthrough" path
+    /// This shouldn't a "passthrough" path.
+    ///
+    /// This path must already exist. Otherwise pocker will fail due
+    /// to `MountCannotCopyOnWrite`.
     #[serde(default)]
     pub(crate) target: String,
 

@@ -175,6 +175,9 @@ pub enum SysAugError {
 
     #[error("Invalid mount target: {0} contains non-utf8 character when fully expanded")]
     InvalidMountUtf8(String),
+
+    #[error("Failed to copy a file for CoW mount: {0}: {1}")]
+    MountCannotCopyOnWrite(std::io::Error, String),
 }
 
 #[derive(Clone, Debug, Default)]

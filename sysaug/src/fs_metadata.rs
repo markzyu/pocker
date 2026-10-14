@@ -172,18 +172,12 @@ impl FileSystem {
             return Ok(None);
         };
 
-        let maybe_canonical_path = if !path.exists() {
-            if path.is_absolute() {
-                std::path::absolute(path).ok()
-            } else {
-                None
-            }
-        } else {
-            // Note: canonicalize() will also resolve ALL symlinks
-            path.canonicalize().ok()
-        };
+        if !path.exists() {
+            return Ok(None);
+        }
 
-        let Some(canonical_path) = maybe_canonical_path else {
+        // Note: canonicalize() will also resolve ALL symlinks
+        let Ok(canonical_path) = path.canonicalize() else {
             return Ok(None);
         };
 

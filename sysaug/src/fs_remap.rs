@@ -201,9 +201,6 @@ impl FileSystem {
             if !reverse {
                 let is_cow = self._check_cow(config, syscall, args, curr_path, &new_path)?;
                 if is_cow == Some(true) {
-                    self.save_metadata(orig_path, |x| {
-                        x.is_cow = Some(true);
-                    })?;
                     return Ok(initial_override);
                 } else if is_cow == None {
                     continue;
@@ -255,6 +252,16 @@ impl FileSystem {
         {
             is_cow = true;
         }
+
+        // Create the copy
+        if is_cow && !path.exists() {
+            let p = path.to_string_lossy().to_string();
+            std::fs::copy(new_path, path).map_err(|e| SysAugError::MountCannotCopyOnWrite(e, p))?;
+            self.save_metadata(path, |x| {
+                x.is_cow = Some(true);
+            })?;
+        }
+
         Ok(Some(is_cow))
     }
 
@@ -630,9 +637,9 @@ mod tests {
         std::fs::create_dir_all(&overlay2).expect(err);
         std::fs::create_dir_all(&overlay3).expect(err);
 
-        std::fs::write(overlay1.join("A"), "").expect(err);
-        std::fs::write(overlay2.join("A"), "").expect(err);
-        std::fs::write(overlay3.join("A"), "").expect(err);
+        std::fs::write(overlay1.join("A"), "9").expect(err);
+        std::fs::write(overlay2.join("A"), "8").expect(err);
+        std::fs::write(overlay3.join("A"), "7").expect(err);
 
         let config = SysAugConfig {
             mounts: vec![
@@ -671,6 +678,33 @@ mod tests {
         let path2 = PathBuf::from("/mnt/abc/A");
         let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
         assert_eq!(ans2, PathAction::Override(dir.join("overlay2").join("A")));
+    }
+
+    #[test]
+    fn test_calc_real_path_writes_with_cow_overlays() {
+        let (fs, dir, _) = setup_with_cow_overlays_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_mkdir as usize);
+        let syscall = maybe_syscall.expect("SYS_mkdir syscall info");
+
+        let path1 = PathBuf::from("/A");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        let expect_path1 = dir.join("A");
+        assert_eq!(ans1, PathAction::Override(expect_path1.clone()));
+        assert_eq!(
+            std::fs::read_to_string(&expect_path1).unwrap(),
+            "7".to_string()
+        );
+
+        std::fs::create_dir_all(dir.join("mnt/abc")).expect("test setup");
+
+        let path2 = PathBuf::from("/mnt/abc/A");
+        let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
+        let expect_path2 = dir.join("mnt/abc/A");
+        assert_eq!(ans2, PathAction::Override(expect_path2.clone()));
+        assert_eq!(
+            std::fs::read_to_string(&expect_path2).unwrap(),
+            "8".to_string()
+        );
     }
 
     fn setup_with_exclusion_config() -> (FileSystem, PathBuf) {
