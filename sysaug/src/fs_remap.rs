@@ -198,11 +198,16 @@ impl FileSystem {
             let new_path: PathBuf = os_str.into();
 
             // Handle CopyOnWrite mode
-            if !reverse && self._check_cow(config, syscall, args, curr_path, &new_path)? {
-                self.save_metadata(orig_path, |x| {
-                    x.is_cow = Some(true);
-                })?;
-                return Ok(initial_override);
+            if !reverse {
+                let is_cow = self._check_cow(config, syscall, args, curr_path, &new_path)?;
+                if is_cow == Some(true) {
+                    self.save_metadata(orig_path, |x| {
+                        x.is_cow = Some(true);
+                    })?;
+                    return Ok(initial_override);
+                } else if is_cow == None {
+                    continue;
+                }
             }
 
             // Handle Default mode
@@ -218,6 +223,10 @@ impl FileSystem {
     ///
     /// path is the original host path.
     /// new_path is the host path if mapped via the current overlayfs
+    ///
+    /// Returns: Some(true) if writing to a copy at `path`
+    /// Returns: Some(false) if reading a file that exists at `new_path`
+    /// Returns: None if neither applies (this layer doesn't contain the file)
     fn _check_cow(
         &self,
         config: &RenameConfig,
@@ -225,30 +234,28 @@ impl FileSystem {
         args: &[usize],
         path: &Path,
         new_path: &PathBuf,
-    ) -> Result<bool, SysAugError> {
+    ) -> Result<Option<bool>, SysAugError> {
         if config.access_mode != RenameAccessMode::CopyOnWrite {
-            return Ok(false);
+            return Ok(Some(false));
         }
 
         if !new_path.exists() {
-            return Ok(false);
+            return Ok(None);
         }
 
         let mut is_cow = false;
         let meta_exists = self.get_metadata_path(path)?.is_some();
         if path.exists() || meta_exists {
             is_cow = true;
-        }
-        if syscall.writes_file {
+        } else if syscall.writes_file {
             is_cow = true;
-        }
-        if let Some(flag_position) = syscall.flags
+        } else if let Some(flag_position) = syscall.flags
             && let Some(flag) = syscall.flag_writes_file
             && (args[flag_position] & flag) != 0
         {
             is_cow = true;
         }
-        Ok(is_cow)
+        Ok(Some(is_cow))
     }
 
     /// Consider dirfd (which is a host path) and return the guest path, or None if not found.
@@ -623,9 +630,9 @@ mod tests {
         std::fs::create_dir_all(&overlay2).expect(err);
         std::fs::create_dir_all(&overlay3).expect(err);
 
-        std::fs::write(overlay1.join("x"), "").expect(err);
-        std::fs::write(overlay2.join("x"), "").expect(err);
-        std::fs::write(overlay3.join("x"), "").expect(err);
+        std::fs::write(overlay1.join("A"), "").expect(err);
+        std::fs::write(overlay2.join("A"), "").expect(err);
+        std::fs::write(overlay3.join("A"), "").expect(err);
 
         let config = SysAugConfig {
             mounts: vec![
@@ -652,18 +659,18 @@ mod tests {
     }
 
     #[test]
-    fn test_calc_real_path_with_cow_overlays() {
+    fn test_calc_real_path_readonly_with_cow_overlays() {
         let (fs, _, dir) = setup_with_cow_overlays_config();
         let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
         let syscall = maybe_syscall.expect("SYS_chdir syscall info");
 
-        let path1 = PathBuf::from("/x");
+        let path1 = PathBuf::from("/A");
         let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
-        assert_eq!(ans1, PathAction::Override(dir.join("overlay3").join("x")));
+        assert_eq!(ans1, PathAction::Override(dir.join("overlay3").join("A")));
 
-        let path2 = PathBuf::from("/mnt/abc/x");
+        let path2 = PathBuf::from("/mnt/abc/A");
         let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
-        assert_eq!(ans2, PathAction::Override(dir.join("overlay2").join("x")));
+        assert_eq!(ans2, PathAction::Override(dir.join("overlay2").join("A")));
     }
 
     fn setup_with_exclusion_config() -> (FileSystem, PathBuf) {

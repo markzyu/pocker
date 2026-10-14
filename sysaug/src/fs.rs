@@ -54,7 +54,7 @@ impl FileSystem {
             &consts.config,
             match path_prefix.as_ref() {
                 Some(path) => path.clone(),
-                None => PathBuf::from("/")
+                None => PathBuf::from("/"),
             },
         )?;
 

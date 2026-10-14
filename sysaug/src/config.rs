@@ -241,7 +241,7 @@ pub(crate) struct MountConfig {
     pub(crate) source: String,
 
     /// An absolute path on the guest OS
-    /// 
+    ///
     /// This shouldn't a "passthrough" path
     #[serde(default)]
     pub(crate) target: String,
@@ -279,7 +279,7 @@ pub(crate) fn init_rename_rules_from_config(
     rename_host_paths: &mut Vec<RenameConfig>,
     rename_guest_paths: &mut Vec<RenameConfig>,
     config: &SysAugConfig,
-    chroot_path: PathBuf
+    chroot_path: PathBuf,
 ) -> Result<(), SysAugError> {
     rename_host_paths.extend(config.rootfs.rename_host_paths.iter().map(Clone::clone));
     rename_guest_paths.extend(config.rootfs.rename_guest_paths.iter().map(Clone::clone));
@@ -304,7 +304,7 @@ pub(crate) fn init_rename_rules_from_config(
         if passthroughs.any(|p| target_path.starts_with(p)) {
             return Err(SysAugError::InvalidMountPassthrough(mount.target.clone()));
         }
-        
+
         // Format the target path (a guest path) into a host path
         let Ok(target_path) = target_path.strip_prefix("/") else {
             continue;
