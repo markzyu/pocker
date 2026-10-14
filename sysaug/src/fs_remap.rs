@@ -275,6 +275,7 @@ impl FileSystem {
 }
 
 #[cfg(test)]
+#[serial_test::serial]
 mod tests {
     use super::*;
     use crate::config::*;

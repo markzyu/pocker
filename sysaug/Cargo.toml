@@ -32,3 +32,6 @@ uuid = { version = "1.26.0", features = ["v4", "fast-rng"] }
 [dependencies.serde]
 version = "1.0.118"
 features = ["derive"]
+
+[dev-dependencies]
+serial_test = { version = "3.5.0", features = [] }
