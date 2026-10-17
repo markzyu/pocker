@@ -42,10 +42,9 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let mut guard_idx = self.getdents_layer_idx.borrow_mut();
             let mut guard_dedup = self.getdents_layer_dedup.borrow_mut();
             let layers = self.fs.getdents_layers.borrow();
-            if let Some(idx) = guard_idx.as_ref()
-                && *idx < layers.len()
-            {
-                let layer = &layers[*idx];
+            let idx = guard_idx.to_owned().unwrap_or(0);
+            if idx < layers.len() {
+                let layer = &layers[idx];
                 if let Some(root) = self.consts.args.rootfs.as_ref() {
                     state.first_saved_path_mut(|path, _| {
                         let Ok(relative) = path.strip_prefix(root) else {
@@ -55,9 +54,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                         Ok(true)
                     })?;
                 }
-            } else {
-                guard_idx.replace(0);
-                guard_dedup.clear();
             }
         }
 
@@ -203,9 +199,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
         let regs_clone = regs.clone();
         ptrace_client.execute(move || setregs(pid, regs_clone))??;
-        if num_dirents == 0 {
-            self.handle_end_of_directory(regs, syscall)?;
-        }
         Ok(())
     }
 }
