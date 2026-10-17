@@ -90,6 +90,8 @@ pub struct AsyncTraceeHandler<'a, PtraceClient: pocker_executor::PtraceClient> {
 
     // --------- Actual shared states that are owned by this Async loop ---------
     pub perms_ids: RefCell<[Option<usize>; PERMS_IDS_SIZE]>,
+    pub getdents_layer_idx: RefCell<Option<usize>>, // None if getdents is completed
+    pub getdents_layer_dedup: RefCell<HashSet<PathBuf>>, // Deduplicate overlapped filenames
 
     pub mmap_tracee_addr: RefCell<usize>,
     pub tracee_stack_offset: RefCell<usize>,

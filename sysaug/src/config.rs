@@ -70,11 +70,19 @@ pub(crate) struct RootfsConfig {
     pub(crate) host_gid: usize,
 
     /// The key (original path) is a regex string with named captures. The value (new path) is a template string.
+    ///
+    /// Another way to set this is through the `mounts` section of `SysAugConfig`.
     #[serde(default = "default_rename_configs")]
     pub(crate) rename_guest_paths: Vec<RenameConfig>,
 
     #[serde(default = "default_rename_configs")]
     pub(crate) rename_host_paths: Vec<RenameConfig>,
+
+    /// Absolute paths to host directories that are layered on top of the rootfs.
+    ///
+    /// Another way to set this is through the `mounts` section of `SysAugConfig`.
+    #[serde(default)]
+    pub(crate) getdents_layers: Vec<String>,
 }
 
 fn default_passthroughs() -> Vec<String> {
@@ -124,6 +132,7 @@ impl Default for RootfsConfig {
             host_gid: default_host_gid(),
             rename_guest_paths: default_rename_configs(),
             rename_host_paths: default_rename_configs(),
+            getdents_layers: Vec::new(),
         }
     }
 }
@@ -335,6 +344,22 @@ pub(crate) fn init_rename_rules_from_config(
         });
     }
     Ok(())
+}
+
+pub(crate) fn init_getdents_layers_from_config(
+    getdents_layers: &mut Vec<PathBuf>,
+    config: &SysAugConfig,
+    chroot: &Option<PathBuf>,
+) {
+    getdents_layers.extend(config.rootfs.getdents_layers.iter().map(Into::into));
+    for mount in &config.mounts {
+        getdents_layers.push(PathBuf::from(&mount.source));
+    }
+    if let Some(chroot) = chroot.as_ref() {
+        getdents_layers.push(chroot.into());
+    } else {
+        getdents_layers.push(PathBuf::from("/"));
+    }
 }
 
 impl Default for SysAugConfig {

@@ -14,6 +14,7 @@ use crate::aug_paths_common::{AugmentState, StrongWeakBuilder, StrongWeakOutput}
 use crate::common::{PathAction, SysAugError, SyscallInfo};
 use crate::fs::path_from_bytes;
 use crate::handler_async::{AsyncTraceeHandler, get_mem_helper};
+use crate::syscalls::SYSCALL_INSTRUCTION_SIZE;
 use pocker_ptrace::{GenericPurposeRegs, read_bytes_to_structs, setregs, write_structs_to_tracee};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -27,9 +28,33 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         syscall: &SyscallInfo,
         state: &AugmentState,
     ) -> Result<(), Option<SysAugError>> {
+        if !syscall.getdents_bits.is_some() {
+            return Ok(());
+        }
+
         // Before system call, make the buffer seem smaller
-        if syscall.getdents_bits.is_some() {
-            state.write_arg(2, state.orig_args[2] / 2);
+        state.write_arg(2, state.orig_args[2] / 2);
+
+        // Initialize getdents layer index and dedup set
+        {
+            let mut guard_idx = self.getdents_layer_idx.borrow_mut();
+            let mut guard_dedup = self.getdents_layer_dedup.borrow_mut();
+            let layers = self.fs.getdents_layers.borrow();
+            if let Some(idx) = guard_idx.as_ref() && *idx < layers.len() {
+                let layer = &layers[*idx];
+                if let Some(root) = self.consts.args.rootfs.as_ref() {
+                    state.first_saved_path_mut(|path, _| {
+                        let Ok(relative) = path.strip_prefix(root) else {
+                            return Ok(false);
+                        };
+                        *path = layer.join(relative);
+                        Ok(true)
+                    })?;
+                }
+            } else {
+                guard_idx.replace(0);
+                guard_dedup.clear();
+            }
         }
 
         // Resume system call, and drop the WeakFutureGuard
@@ -39,7 +64,12 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             (regs.clone(), *retval)
         };
 
-        if retval <= 0 {
+        if retval < 0 {
+            return Ok(());
+        }
+
+        if retval == 0 {
+            self.handle_end_of_directory(regs)?;
             return Ok(());
         }
 
@@ -56,6 +86,29 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             _ => (),
         };
         Ok(())
+    }
+
+    fn handle_end_of_directory(&self, mut regs: GenericPurposeRegs) -> Result<(), SysAugError> {
+        let mut guard_idx = self.getdents_layer_idx.borrow_mut();
+        let mut guard_dedup = self.getdents_layer_dedup.borrow_mut();
+        let layers = self.fs.getdents_layers.borrow();
+        let Some(idx) = guard_idx.to_owned() else {
+            return Ok(());
+        };
+        if idx + 1 >= layers.len() {
+            guard_idx.take();
+            guard_dedup.clear();
+            return Ok(());
+        }
+
+        // End of directory. Trying the next layer.
+        // (Restart system call with the next layer)
+        guard_idx.replace(idx + 1);
+        regs.pc -= SYSCALL_INSTRUCTION_SIZE;
+
+        let pid = self.pid;
+        self.ptrace_client.execute(move || setregs(pid, regs))??;
+        return Ok(());
     }
 
     async fn replace_getdents_result<T>(
@@ -86,6 +139,18 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let action = self
                 .fs
                 .get_mod_path(syscall, &args, orig_path, PathAction::None, true)?;
+
+            // First check dedup between layers
+            {
+                let mut guard_dedup = self.getdents_layer_dedup.borrow_mut();
+                if guard_dedup.contains(&orig_path_buf) {
+                    is_delete.push(true);
+                    continue;
+                }
+                guard_dedup.insert(orig_path_buf.clone());
+            }
+
+            // Then, consult the rename rules
             let delete = match &action {
                 PathAction::Override(override_path) => {
                     let bytes = override_path.as_os_str().as_bytes();
@@ -121,7 +186,12 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         // Restore buffer size value so program doesn't reuse wrong values crash
         regs.arg2 *= 2;
         regs.set_syscall_retval(num_bytes);
-        ptrace_client.execute(move || setregs(pid, regs))??;
+
+        let regs_clone = regs.clone();
+        ptrace_client.execute(move || setregs(pid, regs_clone))??;
+        if num_dirents == 0 {
+            self.handle_end_of_directory(regs)?;
+        }
         Ok(())
     }
 }
