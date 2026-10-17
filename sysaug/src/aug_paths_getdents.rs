@@ -15,7 +15,9 @@ use crate::common::{PathAction, SysAugError, SyscallInfo};
 use crate::fs::path_from_bytes;
 use crate::handler_async::{AsyncTraceeHandler, get_mem_helper};
 use crate::syscalls::SYSCALL_INSTRUCTION_SIZE;
-use pocker_ptrace::{GenericPurposeRegs, read_bytes_to_structs, setregs, write_structs_to_tracee};
+use pocker_ptrace::{
+    GenericPurposeRegs, read_bytes_to_structs, set_syscall_num, setregs, write_structs_to_tracee,
+};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::pin::Pin;
@@ -40,7 +42,9 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let mut guard_idx = self.getdents_layer_idx.borrow_mut();
             let mut guard_dedup = self.getdents_layer_dedup.borrow_mut();
             let layers = self.fs.getdents_layers.borrow();
-            if let Some(idx) = guard_idx.as_ref() && *idx < layers.len() {
+            if let Some(idx) = guard_idx.as_ref()
+                && *idx < layers.len()
+            {
                 let layer = &layers[*idx];
                 if let Some(root) = self.consts.args.rootfs.as_ref() {
                     state.first_saved_path_mut(|path, _| {
@@ -69,7 +73,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         }
 
         if retval == 0 {
-            self.handle_end_of_directory(regs)?;
+            self.handle_end_of_directory(regs, syscall)?;
             return Ok(());
         }
 
@@ -88,7 +92,11 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(())
     }
 
-    fn handle_end_of_directory(&self, mut regs: GenericPurposeRegs) -> Result<(), SysAugError> {
+    fn handle_end_of_directory(
+        &self,
+        mut regs: GenericPurposeRegs,
+        syscall: &SyscallInfo,
+    ) -> Result<(), SysAugError> {
         let mut guard_idx = self.getdents_layer_idx.borrow_mut();
         let mut guard_dedup = self.getdents_layer_dedup.borrow_mut();
         let layers = self.fs.getdents_layers.borrow();
@@ -107,7 +115,10 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         regs.pc -= SYSCALL_INSTRUCTION_SIZE;
 
         let pid = self.pid;
+        let syscall_num = syscall.num as usize;
         self.ptrace_client.execute(move || setregs(pid, regs))??;
+        self.ptrace_client
+            .execute(move || set_syscall_num(pid, syscall_num))??;
         return Ok(());
     }
 
@@ -190,7 +201,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let regs_clone = regs.clone();
         ptrace_client.execute(move || setregs(pid, regs_clone))??;
         if num_dirents == 0 {
-            self.handle_end_of_directory(regs)?;
+            self.handle_end_of_directory(regs, syscall)?;
         }
         Ok(())
     }
