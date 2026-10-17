@@ -150,6 +150,33 @@ impl FileSystem {
         Ok(())
     }
 
+    /// This function does not check for hardlinks. But it does handle CopyOnWrite mode.
+    pub fn rename_metadata(&self, path1: &Path, path2: &Path) -> Result<(), SysAugError> {
+        if self.consts.args.rootfs.is_none() {
+            return Ok(());
+        }
+
+        let Some(meta_path1) = self.get_metadata_path(path1)? else {
+            return Ok(());
+        };
+        let Some(meta_path2) = self.get_metadata_path(path2)? else {
+            return Ok(());
+        };
+
+        // First, create the parent folders for target if they don't exist
+        let parent = meta_path2.parent().unwrap();
+        std::fs::create_dir_all(parent).map_err(SysAugError::MetadataDir)?;
+
+        if let Some(metadata) = self.read_metadata(path1)? {
+            if metadata.is_cow == Some(true) {
+                std::fs::copy(meta_path1, meta_path2).map_err(SysAugError::RenameMetadata)?;
+                return Ok(());
+            }
+        }
+        let _ = std::fs::rename(meta_path1, meta_path2).map_err(SysAugError::RenameMetadata)?;
+        Ok(())
+    }
+
     pub fn get_metadata_dir(&self) -> Option<PathBuf> {
         let args = &self.consts.args;
         let Some(rootfs) = args.rootfs.as_ref() else {
@@ -172,12 +199,17 @@ impl FileSystem {
             return Ok(None);
         };
 
-        if !path.exists() {
-            return Ok(None);
-        }
+        let maybe_canonical_path = if !path.exists() {
+            if path.is_absolute() {
+                std::path::absolute(path).ok()
+            } else {
+                None
+            }
+        } else {
+            path.canonicalize().ok()
+        };
 
-        // Note: canonicalize() will also resolve ALL symlinks
-        let Ok(canonical_path) = path.canonicalize() else {
+        let Some(canonical_path) = maybe_canonical_path else {
             return Ok(None);
         };
 

@@ -213,11 +213,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         }
 
         state.saved_path_pair(i, j, |path1, path2| {
-            let path1 = self.fs.get_metadata_path(path1.as_path())?;
-            let path2 = self.fs.get_metadata_path(path2.as_path())?;
-            if let (Some(path1), Some(path2)) = (path1, path2) {
-                std::fs::rename(path1, path2).map_err(SysAugError::RenameMetadata)?;
-            }
+            self.fs.rename_metadata(path1.as_path(), path2.as_path())?;
             Ok(())
         })?;
         Ok(())

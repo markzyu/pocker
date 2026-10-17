@@ -274,6 +274,8 @@ pub struct SysAugConfig {
     /// This is a shorthand. You can achieve the same effect using `rootfs.rename_host_paths`
     ///
     /// The last layer listed by index, is the "topmost" mount amongst the overlays
+    ///
+    /// Mounts that overlap and share targets, must be stored in the same filesystem / partition on host OS.
     #[serde(default)]
     pub(crate) mounts: Vec<MountConfig>,
 }

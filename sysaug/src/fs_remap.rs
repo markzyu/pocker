@@ -240,9 +240,20 @@ impl FileSystem {
             return Ok(None);
         }
 
+        let meta_exists = if let Some(meta) = self.read_metadata(path)? {
+            meta.is_cow == Some(true)
+        } else {
+            false
+        };
+
+        if meta_exists && !path.exists() {
+            // Right now the only way to whiteout a file is to delete the content
+            // while keeping the metadata
+            return Ok(None);
+        }
+
         let mut is_cow = false;
-        let meta_exists = self.get_metadata_path(path)?.is_some();
-        if path.exists() || meta_exists {
+        if path.exists() {
             is_cow = true;
         } else if syscall.writes_file {
             is_cow = true;
@@ -337,9 +348,13 @@ mod tests {
     fn setup_with_config(config: SysAugConfig) -> (FileSystem, PathBuf) {
         let err = "Failed to setup tests";
         let staging_dir: PathBuf = PathBuf::from("../tests/fixtures/staging");
+        let meta_dir: PathBuf = PathBuf::from("../tests/fixtures/staging.metadata");
         let dir = staging_dir.as_path();
         if dir.exists() {
             std::fs::remove_dir_all(dir).expect(err);
+        }
+        if meta_dir.exists() {
+            std::fs::remove_dir_all(&meta_dir).expect(err);
         }
         std::fs::create_dir_all(dir).expect(err);
         std::fs::write(dir.join("x"), "123").expect(err);
@@ -349,6 +364,7 @@ mod tests {
             config,
             args: SysAugArgs {
                 chroot: Some(staging_absolute.clone()),
+                rootfs: Some(staging_absolute.clone()),
                 ..Default::default()
             },
             ..Default::default()
@@ -673,11 +689,17 @@ mod tests {
 
         let path1 = PathBuf::from("/A");
         let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
-        assert_eq!(ans1, PathAction::Override(dir.join("overlay3").join("A")));
+        let expect_path1 = dir.join("overlay3").join("A");
+        assert_eq!(ans1, PathAction::Override(expect_path1.clone()));
 
         let path2 = PathBuf::from("/mnt/abc/A");
         let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
-        assert_eq!(ans2, PathAction::Override(dir.join("overlay2").join("A")));
+        let expect_path2 = dir.join("overlay2").join("A");
+        assert_eq!(ans2, PathAction::Override(expect_path2.clone()));
+
+        // We haven't copied the file to rootfs so there is no metadata
+        assert!(fs.read_metadata(expect_path1.as_path()).unwrap().is_none());
+        assert!(fs.read_metadata(expect_path2.as_path()).unwrap().is_none());
     }
 
     #[test]
@@ -705,6 +727,133 @@ mod tests {
             std::fs::read_to_string(&expect_path2).unwrap(),
             "8".to_string()
         );
+
+        // Check that metadata exists
+        assert!(fs.read_metadata(expect_path1.as_path()).unwrap().is_some());
+        assert!(fs.read_metadata(expect_path2.as_path()).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_calc_real_path_read_after_write_with_cow_overlays() {
+        let (fs, dir, _) = setup_with_cow_overlays_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+
+        std::fs::write(dir.join("A"), "10").expect("test setup");
+        std::fs::create_dir_all(dir.join("mnt/abc")).expect("test setup");
+        std::fs::write(dir.join("mnt/abc/A"), "10").expect("test setup");
+
+        let path1 = PathBuf::from("/A");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans1, PathAction::Override(dir.join("A")));
+
+        let path2 = PathBuf::from("/mnt/abc/A");
+        let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans2, PathAction::Override(dir.join("mnt/abc/A")));
+    }
+
+    #[test]
+    fn test_calc_real_path_cow_whiteout_file() {
+        let (fs, dir, _) = setup_with_cow_overlays_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_mkdir as usize);
+        let syscall = maybe_syscall.expect("SYS_mkdir syscall info");
+        std::fs::create_dir_all(dir.join("mnt/abc")).expect("test setup");
+
+        // First, create cow copies
+        let path1 = PathBuf::from("/A");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        let expect_path1 = dir.join("A");
+        assert_eq!(ans1, PathAction::Override(expect_path1.clone()));
+
+        let path2 = PathBuf::from("/mnt/abc/A");
+        let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
+        let expect_path2 = dir.join("mnt/abc/A");
+        assert_eq!(ans2, PathAction::Override(expect_path2.clone()));
+
+        // Then, delete the copies
+        fs.delete_metadata(expect_path1.as_path())
+            .expect("setting up whiteout");
+        fs.delete_metadata(expect_path2.as_path())
+            .expect("setting up whiteout");
+        std::fs::remove_file(&expect_path1).expect("setting up whiteout");
+        std::fs::remove_file(&expect_path2).expect("setting up whiteout");
+
+        assert!(fs.read_metadata(expect_path1.as_path()).unwrap().is_some());
+        assert!(fs.read_metadata(expect_path2.as_path()).unwrap().is_some());
+
+        // Now, access to the deleted files should use the latest layer (ENOENT)
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+        let path1 = PathBuf::from("/A");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans1, PathAction::Override(dir.join("A")));
+
+        let path2 = PathBuf::from("/mnt/abc/A");
+        let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans2, PathAction::Override(dir.join("mnt/abc/A")));
+    }
+
+    #[test]
+    fn test_calc_real_path_cow_rename_files() {
+        let (fs, dir, dir2) = setup_with_cow_overlays_config();
+        let (maybe_syscall, _) = get_syscall(libc::SYS_mkdir as usize);
+        let syscall = maybe_syscall.expect("SYS_mkdir syscall info");
+        std::fs::create_dir_all(dir.join("mnt/abc")).expect("test setup");
+
+        // First, create cow copies
+        let path1 = PathBuf::from("/A");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        let expect_path1 = dir.join("A");
+        assert_eq!(ans1, PathAction::Override(expect_path1.clone()));
+
+        let path2 = PathBuf::from("/mnt/abc/A");
+        let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
+        let expect_path2 = dir.join("mnt/abc/A");
+        assert_eq!(ans2, PathAction::Override(expect_path2.clone()));
+
+        // Then, rename the copies
+        let new_path1 = dir.join("B");
+        let new_path2 = dir.join("mnt/abc/B");
+        std::fs::rename(&expect_path1, new_path1.as_path()).expect("rename");
+        std::fs::rename(&expect_path2, new_path2.as_path()).expect("rename");
+        fs.rename_metadata(expect_path1.as_path(), new_path1.as_path())
+            .expect("rename");
+        fs.rename_metadata(expect_path2.as_path(), new_path2.as_path())
+            .expect("rename");
+
+        assert!(fs.read_metadata(new_path1.as_path()).unwrap().is_some());
+        assert!(fs.read_metadata(new_path2.as_path()).unwrap().is_some());
+        assert!(fs.read_metadata(expect_path1.as_path()).unwrap().is_some());
+        assert!(fs.read_metadata(expect_path2.as_path()).unwrap().is_some());
+
+        let invalid_copy1 = dir2.join("overlay3").join("B");
+        let invalid_copy2 = dir2.join("overlay2").join("B");
+        assert!(!expect_path1.exists());
+        assert!(!expect_path2.exists());
+        assert!(!invalid_copy1.exists());
+        assert!(!invalid_copy2.exists());
+        assert!(new_path1.exists());
+        assert!(new_path2.exists());
+
+        // Now try to access the files that "no longer exist"
+        let (maybe_syscall, _) = get_syscall(libc::SYS_chdir as usize);
+        let syscall = maybe_syscall.expect("SYS_chdir syscall info");
+        let path1 = PathBuf::from("/A");
+        let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans1, PathAction::Override(dir.join("A")));
+
+        let path2 = PathBuf::from("/mnt/abc/A");
+        let ans2 = fs.calc_real_path(path2.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans2, PathAction::Override(dir.join("mnt/abc/A")));
+
+        // Now try to access the files that were renamed
+        let path3 = PathBuf::from("/B");
+        let ans3 = fs.calc_real_path(path3.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans3, PathAction::Override(dir.join("B")));
+
+        let path4 = PathBuf::from("/mnt/abc/B");
+        let ans4 = fs.calc_real_path(path4.as_path(), syscall, &[]).unwrap();
+        assert_eq!(ans4, PathAction::Override(dir.join("mnt/abc/B")));
     }
 
     fn setup_with_exclusion_config() -> (FileSystem, PathBuf) {
