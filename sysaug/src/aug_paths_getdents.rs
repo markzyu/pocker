@@ -39,13 +39,13 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
         // Initialize getdents layer index and dedup set
         {
-            let mut guard_idx = self.getdents_layer_idx.borrow_mut();
-            let mut guard_dedup = self.getdents_layer_dedup.borrow_mut();
+            let guard_idx = self.getdents_layer_idx.borrow();
+            let guard_dedup = self.getdents_layer_dedup.borrow();
             let layers = self.fs.getdents_layers.borrow();
             let idx = guard_idx.to_owned().unwrap_or(0);
             if idx < layers.len() {
                 let layer = &layers[idx];
-                if let Some(root) = self.consts.args.rootfs.as_ref() {
+                if let Some(root) = self.consts.args.chroot.as_ref() {
                     state.first_saved_path_mut(|path, _| {
                         let Ok(relative) = path.strip_prefix(root) else {
                             return Ok(false);
