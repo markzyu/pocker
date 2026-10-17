@@ -5,6 +5,7 @@ import subprocess as sub
 IS_ANDROID_TERMUX = 'TERMUX_VERSION' in os.environ
 STAGING = "tests/fixtures/staging"
 METADATA = "tests/fixtures/staging.metadata"
+OVERLAYS = "tests/fixtures/staging.overlays"
 
 
 def run(args, **kwargs):

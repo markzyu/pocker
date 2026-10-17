@@ -46,6 +46,12 @@ pub enum CLIError {
 
     #[error("Unknown image format: {0}")]
     OciImageFormat(String),
+
+    #[error("Failed to read config.json: {0}")]
+    ReadConfigJson(std::io::Error),
+
+    #[error("Failed to read config.json: {0}")]
+    ParseConfigJson(serde_json::Error),
 }
 
 #[derive(Args, Clone, Debug)]
@@ -119,11 +125,35 @@ fn launch_ptrace_with<PtraceClient: pocker_executor::PtraceClient>(
     let pid1 = { pocker_ptrace::start(&mut cmd, fix_attach)? };
     event!(Level::INFO, "First tracee pid: {:?}", pid1);
 
+    // Read config.json from args.rootfs
+    let mut maybe_config: Option<pocker_sysaug::SysAugConfig> = None;
+    if let Some(rootfs) = args.rootfs.as_ref() {
+        let rootfs = rootfs
+            .canonicalize()
+            .map_err(|e| CLIError::PathCanonicalization(rootfs.clone(), e))?;
+        let mut dir_name = rootfs
+            .file_name()
+            .expect("Rootfs path cannot be the root directory")
+            .to_os_string();
+        let parent_dir = rootfs
+            .parent()
+            .expect("Rootfs path cannot be the root directory");
+        dir_name.push(".metadata");
+        let metadata_dir = parent_dir.join(dir_name);
+        let config_path = metadata_dir.join("config.json");
+        if config_path.exists() {
+            let config = std::fs::read_to_string(config_path).map_err(CLIError::ReadConfigJson)?;
+            let config: pocker_sysaug::SysAugConfig =
+                serde_json::from_str(&config).map_err(CLIError::ParseConfigJson)?;
+            maybe_config = Some(config);
+        }
+    }
+
     // Setup tracee handler states
     let states = pocker_sysaug::TraceeHandlerConsts {
         args,
+        config: maybe_config.unwrap_or_default(),
         root_pid: pid1,
-        ..Default::default()
     };
 
     // Start tracee handler thread

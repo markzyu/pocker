@@ -33,5 +33,6 @@ pub use crate::common::{
     DelType, PermType, PermsMode, SysAugArgs, SysAugError, SyscallInfo, display_err, rwlock_read,
     rwlock_replace, rwlock_write, rwoption_replace, rwoption_setdefault, rwoption_take,
 };
+pub use crate::config::SysAugConfig;
 pub use crate::handler_sync::{TraceeHandler, TraceeHandlerConsts};
 pub use crate::syscalls::{RAW_SYSCALL_INFOS, SYSCALL_INFOS};
