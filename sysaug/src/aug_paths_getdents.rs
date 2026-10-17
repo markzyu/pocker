@@ -35,12 +35,12 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         }
 
         // Before system call, make the buffer seem smaller
-        state.write_arg(2, state.orig_args[2] / 2);
+        let buf_size = state.orig_args[2] / 2;
+        state.write_arg(2, buf_size);
 
         // Initialize getdents layer index and dedup set
         {
             let guard_idx = self.getdents_layer_idx.borrow();
-            let guard_dedup = self.getdents_layer_dedup.borrow();
             let layers = self.fs.getdents_layers.borrow();
             let idx = guard_idx.to_owned().unwrap_or(0);
             if idx < layers.len() {
@@ -68,7 +68,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             return Ok(());
         }
 
-        if retval == 0 {
+        if retval == 0 || (retval as usize) < buf_size {
             self.handle_end_of_directory(regs, syscall)?;
             return Ok(());
         }
