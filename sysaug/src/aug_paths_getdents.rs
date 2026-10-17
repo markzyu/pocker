@@ -178,9 +178,12 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         }
 
         let mut i = 0;
-        dirents.retain(|_e| {
+        dirents.retain(|e| {
             let ans = is_delete[i];
             i += 1;
+            if ans {
+                event!(Level::DEBUG, "Skipping getdents entry {:?}", &e);
+            }
             !ans
         });
 
