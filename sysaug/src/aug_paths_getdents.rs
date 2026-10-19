@@ -67,10 +67,12 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             return Ok(());
         }
 
-        if retval == 0 || (retval as usize) < buf_size {
+        if retval == 0 {
             self.handle_end_of_directory(regs, syscall)?;
             return Ok(());
         }
+
+        let regs_clone = regs.clone();
 
         // After system call, replace results
         match syscall.getdents_bits {
@@ -79,11 +81,17 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     .await?
             }
             Some(64) => {
+                event!(Level::TRACE, "Intercepting 64-bit getdents result");
                 self.replace_getdents_result::<Dirent64>(syscall, regs)
                     .await?
             }
             _ => (),
         };
+
+        if (retval as usize) < buf_size {
+            self.handle_end_of_directory(regs_clone, syscall)?;
+            return Ok(());
+        }
         Ok(())
     }
 
@@ -137,10 +145,11 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
         let mut is_delete: Vec<bool> = Vec::new();
         for entry in dirents.iter_mut() {
-            event!(Level::TRACE, "Intercepting {:?}", entry);
             entry.normalize_type();
             let orig_path_buf = path_from_bytes(entry.get_name().to_vec())?;
             let orig_path: &Path = orig_path_buf.as_path();
+            event!(Level::TRACE, "Intercepting {:?}", orig_path);
+
             let args = [regs.arg0, regs.arg1, regs.arg2, regs.arg3];
             let action = self
                 .fs
@@ -150,6 +159,11 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             {
                 let mut guard_dedup = self.getdents_layer_dedup.borrow_mut();
                 if guard_dedup.contains(&orig_path_buf) {
+                    event!(
+                        Level::TRACE,
+                        "Skipping duplicate getdents entry {:?}",
+                        orig_path
+                    );
                     is_delete.push(true);
                     continue;
                 }
@@ -160,15 +174,18 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let delete = match &action {
                 PathAction::Override(override_path) => {
                     let bytes = override_path.as_os_str().as_bytes();
-                    entry.get_name().fill(0);
+                    entry.get_mut_name().fill(0);
                     for (i, byte) in bytes.iter().take_while(|x| **x != 0).enumerate() {
-                        entry.get_name()[i] = *byte;
+                        entry.get_mut_name()[i] = *byte;
                     }
                     false
                 }
                 PathAction::HidePath => true,
                 _ => false,
             };
+            if delete {
+                event!(Level::TRACE, "Skipping getdents entry {:?}", orig_path);
+            }
             is_delete.push(delete);
         }
 
@@ -176,9 +193,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         dirents.retain(|e| {
             let ans = is_delete[i];
             i += 1;
-            if ans {
-                event!(Level::DEBUG, "Skipping getdents entry {:?}", &e);
-            }
             !ans
         });
 
@@ -203,7 +217,8 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 }
 
 trait IDirent: pocker_ptrace::CStruct + std::fmt::Debug {
-    fn get_name(&mut self) -> &mut [u8];
+    fn get_name(&self) -> &[u8];
+    fn get_mut_name(&mut self) -> &mut [u8];
     fn normalize_type(&mut self);
 }
 
@@ -246,7 +261,11 @@ const DT_UNKNOWN: u8 = 0;
 const DT_LNK: u8 = 10;
 
 impl IDirent for Dirent64 {
-    fn get_name(&mut self) -> &mut [u8] {
+    fn get_name(&self) -> &[u8] {
+        &self.name
+    }
+
+    fn get_mut_name(&mut self) -> &mut [u8] {
         &mut self.name
     }
 
@@ -270,7 +289,11 @@ impl pocker_ptrace::CHeader for Dirent64Header {
 }
 
 impl IDirent for Dirent {
-    fn get_name(&mut self) -> &mut [u8] {
+    fn get_name(&self) -> &[u8] {
+        &self.name
+    }
+
+    fn get_mut_name(&mut self) -> &mut [u8] {
         &mut self.name
     }
 
