@@ -45,15 +45,14 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let idx = guard_idx.to_owned().unwrap_or(0);
             if idx < layers.len() {
                 let layer = &layers[idx];
-                if let Some(root) = self.consts.args.chroot.as_ref() {
-                    state.first_saved_path_mut(|path, _| {
-                        let Ok(relative) = path.strip_prefix(root) else {
-                            return Ok(false);
-                        };
-                        *path = layer.join(relative);
-                        Ok(true)
-                    })?;
-                }
+                let root = layer.mount_path.as_path();
+                state.first_saved_path_mut(|path, _| {
+                    let Ok(relative) = path.strip_prefix(root) else {
+                        return Ok(false);
+                    };
+                    *path = layer.source_path.join(relative);
+                    Ok(true)
+                })?;
             }
         }
 

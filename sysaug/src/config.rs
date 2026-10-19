@@ -56,6 +56,16 @@ fn default_rename_mode() -> RenameAccessMode {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct GetdentsLayerConfig {
+    #[serde(default)]
+    // The path of the layer's mount point on the host OS
+    pub(crate) mount_path: PathBuf,
+    #[serde(default)]
+    // The path of the source directory for this layer, on the host OS
+    pub(crate) source_path: PathBuf,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct RootfsConfig {
     #[serde(default = "default_passthroughs")]
     pub(crate) passthroughs: Vec<String>,
@@ -82,7 +92,7 @@ pub(crate) struct RootfsConfig {
     ///
     /// Another way to set this is through the `mounts` section of `SysAugConfig`.
     #[serde(default)]
-    pub(crate) getdents_layers: Vec<String>,
+    pub(crate) getdents_layers: Vec<GetdentsLayerConfig>,
 }
 
 fn default_passthroughs() -> Vec<String> {
@@ -347,18 +357,27 @@ pub(crate) fn init_rename_rules_from_config(
 }
 
 pub(crate) fn init_getdents_layers_from_config(
-    getdents_layers: &mut Vec<PathBuf>,
+    getdents_layers: &mut Vec<GetdentsLayerConfig>,
     config: &SysAugConfig,
     chroot: &Option<PathBuf>,
 ) {
-    getdents_layers.extend(config.rootfs.getdents_layers.iter().map(Into::into));
+    getdents_layers.extend(config.rootfs.getdents_layers.iter().map(Clone::clone));
     for mount in &config.mounts {
-        getdents_layers.push(PathBuf::from(&mount.source));
+        getdents_layers.push(GetdentsLayerConfig {
+            source_path: PathBuf::from(&mount.source),
+            mount_path: PathBuf::from(&mount.target),
+        });
     }
     if let Some(chroot) = chroot.as_ref() {
-        getdents_layers.push(chroot.into());
+        getdents_layers.push(GetdentsLayerConfig {
+            source_path: chroot.clone(),
+            mount_path: chroot.clone(),
+        });
     } else {
-        getdents_layers.push(PathBuf::from("/"));
+        getdents_layers.push(GetdentsLayerConfig {
+            source_path: PathBuf::from("/"),
+            mount_path: PathBuf::from("/"),
+        });
     }
 }
 

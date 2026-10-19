@@ -13,8 +13,8 @@
 use crate::TraceeHandlerConsts;
 use crate::common::SysAugError;
 use crate::config::{
-    RenameConfig, init_getdents_layers_from_config, init_passthroughs_from_config,
-    init_rename_rules_from_config,
+    GetdentsLayerConfig, RenameConfig, init_getdents_layers_from_config,
+    init_passthroughs_from_config, init_rename_rules_from_config,
 };
 use nix::unistd::Pid;
 use std::cell::RefCell;
@@ -36,7 +36,7 @@ pub struct FileSystem {
     /// The editable guest rename rules, in case factors other than configs are involved
     pub rename_guest_paths: RefCell<Vec<RenameConfig>>,
     /// The editable getdents layers, in case factors other than configs are involved
-    pub getdents_layers: RefCell<Vec<PathBuf>>,
+    pub getdents_layers: RefCell<Vec<GetdentsLayerConfig>>,
     pub pid: Pid,
 }
 
@@ -63,7 +63,7 @@ impl FileSystem {
             },
         )?;
 
-        let mut getdents_layers: Vec<PathBuf> = Vec::new();
+        let mut getdents_layers: Vec<GetdentsLayerConfig> = Vec::new();
         init_getdents_layers_from_config(&mut getdents_layers, &consts.config, &consts.args.chroot);
 
         Ok(Self {
