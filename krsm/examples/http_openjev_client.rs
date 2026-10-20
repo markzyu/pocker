@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::mpsc::channel;
 
+const MAX_MATCHES_PER_PARAGRAPH: usize = 5;
+
 /// This is an example of a HTTP client with business logics. It uses AIs like
 /// OpenJEV to find semantic matches in any **English** text, given an input prompt.
 ///
@@ -109,7 +111,7 @@ impl<'a> HttpClient<'a> {
 
     /// The input paragraph must contain a fuzzy match
     async fn _generate_fuzzy_match(&self) -> TResult<Vec<String>> {
-        loop {
+        for _ in 0..MAX_MATCHES_PER_PARAGRAPH {
             let future = HttpClientYieldReason::GenerateMatchFinalCheck(self._ticket());
             let response = self.runtime.new_pending_future(future).await?;
 
@@ -132,6 +134,10 @@ impl<'a> HttpClient<'a> {
                 result_list.push(str.to_string());
             }
         }
+        let mut result_list = self.curr_matches.borrow_mut();
+        let list = result_list.clone();
+        result_list.clear();
+        Ok(list)
     }
 
     async fn fuzzy_scan_file(&self) -> TResult<&RefCell<ExamplesAndMatches>> {
