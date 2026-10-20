@@ -12,6 +12,12 @@ use std::sync::mpsc::channel;
 /// This is an example of a HTTP client with business logics. It uses AIs like
 /// OpenJEV to find semantic matches in any **English** text, given an input prompt.
 ///
+/// To use this example with a System One API key, please set the following env variables:
+///
+/// * `OPENJEV_URL=https://api.typesafe.ai/v1/systemone`
+/// * `OPENJEV_MODEL=jev-latest`
+/// * `OPENJEV_KEY=(your key)`
+///
 /// This example doesn't implement the networking I/O logics and instead relies
 /// on `minreq` to perform the actual I/O.
 ///
@@ -318,7 +324,7 @@ fn http_request_batcher(
     let url = std::env::var("OPENJEV_URL")?;
     let key = std::env::var("OPENJEV_KEY")?;
     let key_header = format!("Bearer {}", key);
-    let model = "openjev-latest";
+    let model = std::env::var("OPENJEV_MODEL").unwrap_or("openjev-latest".to_string());
 
     let request = minreq::post(&url).with_header("Authorization", &key_header);
     let mut questions: HashMap<String, OpenJevQuestion<String>> = HashMap::new();
