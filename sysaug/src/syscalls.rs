@@ -293,6 +293,7 @@ macro_rules! define_getdents_syscall {
             num: $name,
             path_positions: 0,
             getdents_bits: Some($getdents_bits),
+            dirfd_position: Some(0),
             ..default_syscall_info()
         });
     };
