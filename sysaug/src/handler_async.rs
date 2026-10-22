@@ -30,7 +30,7 @@ use pocker_ptrace::{
     set_tracee_write_region_addr, setregs,
 };
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
@@ -63,15 +63,6 @@ macro_rules! call_augment {
     };
 }
 
-/// This stores the state of a directory fd during getdents.
-#[derive(Default)]
-pub struct GetdentsState {
-    /// The index of the current layer to read from. None if getdents reached end of directory.
-    pub layer_idx: Option<usize>,
-    /// Because layers can share files of the same name, we need to dedup them.
-    pub dedup: HashSet<PathBuf>,
-}
-
 /// This is the asynchronous event loop. It is protected from Rust's threadsafety constraints,
 /// (i.e. you don't need Arc/RwLock for internal states) because PtraceAsyncRuntime runs on a single, local thread.
 pub struct AsyncTraceeHandler<'a, PtraceClient: pocker_executor::PtraceClient> {
@@ -99,8 +90,6 @@ pub struct AsyncTraceeHandler<'a, PtraceClient: pocker_executor::PtraceClient> {
 
     // --------- Actual shared states that are owned by this Async loop ---------
     pub perms_ids: RefCell<[Option<usize>; PERMS_IDS_SIZE]>,
-
-    pub getdents_state: RefCell<HashMap<usize, GetdentsState>>,
 
     pub mmap_tracee_addr: RefCell<usize>,
     pub tracee_stack_offset: RefCell<usize>,

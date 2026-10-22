@@ -13,10 +13,9 @@
 use crate::aug_paths_common::{AugmentState, StrongWeakBuilder, StrongWeakOutput};
 use crate::common::{PathAction, SysAugError, SyscallInfo};
 use crate::fs::path_from_bytes;
-use crate::handler_async::{AsyncTraceeHandler, GetdentsState, get_mem_helper};
-use crate::syscalls::SYSCALL_INSTRUCTION_SIZE;
+use crate::handler_async::{AsyncTraceeHandler, get_mem_helper};
 use pocker_ptrace::{
-    GenericPurposeRegs, read_bytes_to_structs, set_syscall_num, setregs, write_structs_to_tracee,
+    GenericPurposeRegs, read_bytes_to_structs, setregs, write_structs_to_tracee,
 };
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -33,39 +32,10 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         if !syscall.getdents_bits.is_some() {
             return Ok(());
         }
-        let Some(dirfd_position) = syscall.dirfd_position else {
-            return Ok(());
-        };
-        let dirfd = state.orig_args[dirfd_position as usize];
 
         // Before system call, make the buffer seem smaller
         let buf_size = state.orig_args[2] / 2;
         state.write_arg(2, buf_size);
-
-        // Initialize getdents layer index and dedup set
-        {
-            let mut guard = self.getdents_state.borrow_mut();
-            if let Some(dir_state) = guard.get(&dirfd) {
-                let layers = self.fs.getdents_layers.borrow();
-                let idx = dir_state.layer_idx;
-                if let Some(idx) = idx && idx < layers.len() {
-                    let layer = &layers[idx];
-                    let root = layer.mount_path.as_path();
-                    state.first_saved_path_mut(|path, _| {
-                        let Ok(relative) = path.strip_prefix(root) else {
-                            return Ok(false);
-                        };
-                        *path = layer.source_path.join(relative);
-                        Ok(true)
-                    })?;
-                }
-            } else {
-                guard.insert(dirfd, GetdentsState {
-                    layer_idx: Some(0),
-                    ..Default::default()
-                });
-            }
-        }
 
         // Resume system call, and drop the WeakFutureGuard
         let (regs, retval) = {
@@ -74,76 +44,30 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             (regs.clone(), *retval)
         };
 
-        if retval < 0 {
+        if retval <= 0 {
             return Ok(());
         }
-
-        if retval == 0 {
-            self.handle_end_of_directory(regs, syscall, dirfd)?;
-            return Ok(());
-        }
-
-        let regs_clone = regs.clone();
 
         // After system call, replace results
         match syscall.getdents_bits {
             Some(32) => {
-                self.replace_getdents_result::<Dirent>(syscall, regs, dirfd)
+                self.replace_getdents_result::<Dirent>(syscall, regs)
                     .await?
             }
             Some(64) => {
                 event!(Level::TRACE, "Intercepting 64-bit getdents result");
-                self.replace_getdents_result::<Dirent64>(syscall, regs, dirfd)
+                self.replace_getdents_result::<Dirent64>(syscall, regs)
                     .await?
             }
             _ => (),
         };
-
-        if (retval as usize) < buf_size {
-            self.handle_end_of_directory(regs_clone, syscall, dirfd)?;
-            return Ok(());
-        }
         Ok(())
-    }
-
-    fn handle_end_of_directory(
-        &self,
-        mut regs: GenericPurposeRegs,
-        syscall: &SyscallInfo,
-        dirfd: usize,
-    ) -> Result<(), SysAugError> {
-        let mut guard = self.getdents_state.borrow_mut();
-        let Some(dir_state) = guard.get_mut(&dirfd) else {
-            return Ok(());
-        };
-        let layers = self.fs.getdents_layers.borrow();
-        let Some(idx) = dir_state.layer_idx.to_owned() else {
-            return Ok(());
-        };
-        if idx + 1 >= layers.len() {
-            dir_state.layer_idx.take();
-            dir_state.dedup.clear();
-            return Ok(());
-        }
-
-        // End of directory. Trying the next layer.
-        // (Restart system call with the next layer)
-        dir_state.layer_idx = Some(idx + 1);
-        regs.pc -= SYSCALL_INSTRUCTION_SIZE;
-
-        let pid = self.pid;
-        let syscall_num = syscall.num as usize;
-        self.ptrace_client.execute(move || setregs(pid, regs))??;
-        self.ptrace_client
-            .execute(move || set_syscall_num(pid, syscall_num))??;
-        return Ok(());
     }
 
     async fn replace_getdents_result<T>(
         &self,
         syscall: &SyscallInfo,
         mut regs: GenericPurposeRegs,
-        dirfd: usize,
     ) -> Result<(), SysAugError>
     where
         T: IDirent + Clone + Send + 'static,
@@ -169,22 +93,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let action = self
                 .fs
                 .get_mod_path(syscall, &args, orig_path, PathAction::None, true)?;
-
-            // First check dedup between layers
-            {
-                let mut guard = self.getdents_state.borrow_mut();
-                let dir_state = guard.get_mut(&dirfd).unwrap();
-                if dir_state.dedup.contains(&orig_path_buf) {
-                    event!(
-                        Level::TRACE,
-                        "Skipping duplicate getdents entry {:?}",
-                        orig_path
-                    );
-                    is_delete.push(true);
-                    continue;
-                }
-                dir_state.dedup.insert(orig_path_buf.clone());
-            }
 
             // Then, consult the rename rules
             let delete = match &action {

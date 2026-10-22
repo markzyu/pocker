@@ -203,7 +203,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> TraceeHandler<PtraceClient> {
             fs: FileSystem::new(consts, pid)?,
 
             perms_ids: RefCell::default(),
-            getdents_state: RefCell::default(),
 
             mmap_tracee_addr: RefCell::default(),
             tracee_stack_offset: RefCell::default(),
