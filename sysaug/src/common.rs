@@ -231,6 +231,16 @@ pub enum PathAction {
     Override(PathBuf),
 }
 
+/// A file type used by the overlay filesystem.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OverlayFileType {
+    /// This file is a copy-on-write of a file from an overlay mount.
+    CoW,
+    /// This file is a readonly placeholder of a file from an overlay mount.
+    Placeholder,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RootFsMetadata {
@@ -241,7 +251,7 @@ pub struct RootFsMetadata {
     /// This marker means the file is a copy from an overlay mount.
     /// And it means "if the file is deleted, the metadata should stay."
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub is_cow: Option<bool>,
+    pub overlay_type: Option<OverlayFileType>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_symlink: Option<bool>,

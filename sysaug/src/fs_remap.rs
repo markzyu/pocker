@@ -10,7 +10,7 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
-use crate::common::{PathAction, SysAugError, SyscallInfo};
+use crate::common::{OverlayFileType, PathAction, SysAugError, SyscallInfo};
 use crate::config::{RenameAccessMode, RenameConfig};
 use crate::fs::FileSystem;
 use std::collections::HashSet;
@@ -241,7 +241,7 @@ impl FileSystem {
         }
 
         let meta_exists = if let Some(meta) = self.read_metadata(path)? {
-            meta.is_cow == Some(true)
+            meta.overlay_type.is_some()
         } else {
             false
         };
@@ -269,7 +269,7 @@ impl FileSystem {
             let p = path.to_string_lossy().to_string();
             std::fs::copy(new_path, path).map_err(|e| SysAugError::MountCannotCopyOnWrite(e, p))?;
             self.save_metadata(path, |x| {
-                x.is_cow = Some(true);
+                x.overlay_type = Some(OverlayFileType::CoW);
             })?;
         }
 

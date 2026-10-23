@@ -10,7 +10,7 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
-use crate::common::{RootFsMetadata, SysAugError, display_err};
+use crate::common::{OverlayFileType, RootFsMetadata, SysAugError, display_err};
 use crate::fs::FileSystem;
 use std::io::Seek;
 use std::path::{Component, Path, PathBuf};
@@ -117,7 +117,11 @@ impl FileSystem {
                     x.hardlink_counter = Some(val - 1);
                     return true;
                 }
-                x.is_cow == Some(true)
+                if x.overlay_type.is_some() {
+                    // any future write to this file should be considered CoW
+                    x.overlay_type = Some(OverlayFileType::CoW);
+                }
+                x.overlay_type.is_some()
             })?;
             if should_keep == Some(true) {
                 return Ok(());
@@ -167,11 +171,16 @@ impl FileSystem {
         let parent = meta_path2.parent().unwrap();
         std::fs::create_dir_all(parent).map_err(SysAugError::MetadataDir)?;
 
-        if let Some(metadata) = self.read_metadata(path1)? {
-            if metadata.is_cow == Some(true) {
-                std::fs::copy(meta_path1, meta_path2).map_err(SysAugError::RenameMetadata)?;
-                return Ok(());
+        let is_cow = self.save_metadata(path1, |x| {
+            if x.overlay_type.is_some() {
+                // Any write to path1 and path2 should be considered CoW
+                x.overlay_type = Some(OverlayFileType::CoW);
             }
+            x.overlay_type.is_some()
+        })?;
+        if is_cow == Some(true) {
+            std::fs::copy(meta_path1, meta_path2).map_err(SysAugError::RenameMetadata)?;
+            return Ok(());
         }
         let _ = std::fs::rename(meta_path1, meta_path2).map_err(SysAugError::RenameMetadata)?;
         Ok(())
