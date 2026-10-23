@@ -10,6 +10,8 @@ import unittest as t
 
 DEBUGENV = {"RUST_LOG": "TRACE", "RUST_LOG_BLOCKING": "1"}
 
+OVERLAY1_META = OVERLAYS + "/overlay1.metadata"
+
 INIT_DIRS = [
     STAGING,
     METADATA,
@@ -19,6 +21,7 @@ INIT_DIRS = [
     OVERLAYS + "/overlay1/dir1",
     OVERLAYS + "/overlay2/dir1",
     OVERLAYS + "/overlay3/dir1",
+    OVERLAY1_META + "/rootfs/chld/file0",
     STAGING + "/dir1",
 ]
 INIT_FILES = {
@@ -51,6 +54,13 @@ INIT_FILES = {
     OVERLAYS + "/overlay3/file4": "7",
     STAGING + "/file1": "8",
     STAGING + "/file5": "9",
+
+    OVERLAY1_META + "/rootfs/chld/file0/meta": json.dumps({
+        "chmod": 0o644,
+        "chownOwner": 0,
+        "chownGroup": 0,
+        "overlayType": "coW"
+    }),
 
     OVERLAYS + "/overlay1/dir1/fileA": "a",
     OVERLAYS + "/overlay1/dir1/fileB": "b",
@@ -101,6 +111,12 @@ class TestOverlays(t.TestCase):
         }
         for file, content in expected.items():
             self._assert_guest_reads(file, content)
+
+    def test_reads_metadata_from_overlay(self):
+        cmd = f"stat -c '%a %u %g' {STAGING}/file0"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+        self.assertEqual(ans.stdout.decode("utf8").strip(), "644 0 0")
 
     def test_basic_listdir(self):
         self._assert_guest_listdir(STAGING, ["dir1", "file0", "file1", "file2", "file3", "file4", "file5"])
