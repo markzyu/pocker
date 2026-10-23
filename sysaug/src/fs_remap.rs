@@ -242,13 +242,28 @@ impl FileSystem {
 
         if new_path.is_dir() && syscall.deletion_type.is_none() {
             // Check the cow metadata of directory content
-            // And make the directory itself a non-overlay rootfs file
+            // But, enumerate the directory as if it's on the rootfs, not as overlays
+            // And, mark the directory itself as a CoW file so that whiteouts work
             let p = path.to_string_lossy().to_string();
             let paths = _check_cow_directory(path, new_path)
                 .map_err(|e| SysAugError::MountCannotMergeDirectory(e, p))?;
 
+            self.save_metadata(new_path, |x| {
+                x.overlay_type = Some(OverlayFileType::CoW);
+                return true;
+            })?;
+
             for (child_path, child_new_path) in paths {
                 if child_new_path.is_dir() {
+                    let child_overlay_type = if let Some(meta) = self.read_metadata(&child_path)? {
+                        meta.overlay_type
+                    } else {
+                        None
+                    };
+                    if child_overlay_type == Some(OverlayFileType::CoW) {
+                        continue;
+                    }
+
                     let p2 = child_path.to_string_lossy().to_string();
                     std::fs::create_dir_all(child_path)
                         .map_err(|e| SysAugError::MountCannotMergeDirectory(e, p2))?;
@@ -298,7 +313,7 @@ impl FileSystem {
         }
 
         // Or, create the placeholder
-        if !is_cow && !path.exists() {
+        if !is_cow && !path.exists() && overlay_type != Some(OverlayFileType::CoW) {
             let p = path.to_string_lossy().to_string();
             if new_path.is_dir() {
                 std::fs::create_dir_all(path)

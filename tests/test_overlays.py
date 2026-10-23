@@ -94,7 +94,9 @@ class TestOverlays(t.TestCase):
 
     def _assert_host_listdir(self, dir, expected_names):
         with os.scandir(dir) as it:
-            self.assertEqual(list(map(lambda x: x.name, it)), expected_names)
+            host_list = list(map(lambda x: x.name, it))
+            host_list.sort()
+            self.assertEqual(host_list, sorted(expected_names))
     
     def _assert_host_reads(self, file, content):
         with open(file, "r") as f:
@@ -173,7 +175,7 @@ class TestOverlays(t.TestCase):
         self._assert_host_listdir(OVERLAYS + "/overlay1/dir1", ["fileA", "fileB"])
         self._assert_host_listdir(OVERLAYS + "/overlay2/dir1", ["fileB", "fileC"])
         self._assert_host_listdir(OVERLAYS + "/overlay3/dir1", ["fileD"])
-        self._assert_host_listdir(STAGING, ["file1", "file5"])
+        self._assert_host_listdir(STAGING, ["file0", "file1", "file2", "file3", "file4", "file5"])
         self.assertFalse(os.path.exists(STAGING + "/dir1"))
 
         cmd = f"mkdir -p {STAGING}/dir1"
@@ -185,5 +187,6 @@ class TestOverlays(t.TestCase):
         self._assert_host_listdir(OVERLAYS + "/overlay1/dir1", ["fileA", "fileB"])
         self._assert_host_listdir(OVERLAYS + "/overlay2/dir1", ["fileB", "fileC"])
         self._assert_host_listdir(OVERLAYS + "/overlay3/dir1", ["fileD"])
+        self._assert_host_listdir(STAGING, ["dir1", "file0", "file1", "file2", "file3", "file4", "file5"])
         self._assert_host_listdir(STAGING + "/dir1", [])
         self.assertTrue(os.path.exists(STAGING + "/dir1"))
