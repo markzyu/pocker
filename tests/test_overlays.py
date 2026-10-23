@@ -58,7 +58,23 @@ class TestOverlays(t.TestCase):
             os.system(f"mkdir -p {dir}")
         for file, content in INIT_FILES.items():
             os.system(f"echo -n '{content}' > {file}")
+
+    def _assert_guest_reads(self, file, content):
+        cmd = f"cat {file}"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+        self.assertEqual(ans.stdout.decode("utf8").strip(), content)
+
+    def _assert_guest_listdir(self, dir, expected_names):
+        cmd = f"ls -1 {dir}"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+        self.assertEqual(ans.stdout.decode("utf8").strip(), "\n".join(expected_names).strip())
     
+    def _assert_host_reads(self, file, content):
+        with open(file, "r") as f:
+            self.assertEqual(f.read().strip(), content)
+
     def test_reads(self):
         expected = {
             STAGING + "/file0": "_",
@@ -69,21 +85,39 @@ class TestOverlays(t.TestCase):
             STAGING + "/file5": "9",
         }
         for file, content in expected.items():
-            cmd = f"cat {file}"
-            ans = c.run_script(cmd.encode(), rootfs=True)
-            self.assertEqual(ans.returncode, 0)
-            self.assertEqual(ans.stdout.decode("utf8"), content)
+            self._assert_guest_reads(file, content)
 
     def test_basic_listdir(self):
-        cmd = f"ls -1 {STAGING}"
+        self._assert_guest_listdir(STAGING, ["file0", "file1", "file2", "file3", "file4", "file5"])
+    
+    def test_read_after_write(self):
+        self._assert_guest_reads(STAGING + "/file2", "3")
+
+        cmd = f"echo -n 'a' > {STAGING}/file2"
         ans = c.run_script(cmd.encode(), rootfs=True)
-        expected = [
-            "file0",
-            "file1",
-            "file2",
-            "file3",
-            "file4",
-            "file5",
-        ]
         self.assertEqual(ans.returncode, 0)
-        self.assertEqual(ans.stdout.decode("utf8"), "\n".join(expected) + "\n")
+
+        self._assert_guest_reads(STAGING + "/file2", "a")
+        self._assert_host_reads(OVERLAYS + "/overlay1/file2", "1")
+        self._assert_host_reads(OVERLAYS + "/overlay2/file2", "3")
+        self._assert_host_reads(STAGING + "/file2", "a")
+    
+    def test_whiteout(self):
+        cmd = f"rm -f {STAGING}/file2"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+
+        self._assert_guest_listdir(STAGING, ["file0", "file1", "file3", "file4", "file5"])
+        self._assert_host_reads(OVERLAYS + "/overlay1/file2", "1")
+        self._assert_host_reads(OVERLAYS + "/overlay2/file2", "3")
+        self.assertFalse(os.path.exists(STAGING + "/file2"))
+
+        cmd = f"echo -n 'b' > {STAGING}/file2"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+
+        self._assert_guest_reads(STAGING + "/file2", "b")
+        self._assert_guest_listdir(STAGING, ["file0", "file1", "file2", "file3", "file4", "file5"])
+        self._assert_host_reads(OVERLAYS + "/overlay1/file2", "1")
+        self._assert_host_reads(OVERLAYS + "/overlay2/file2", "3")
+        self._assert_host_reads(STAGING + "/file2", "b")
