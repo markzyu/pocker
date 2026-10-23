@@ -53,6 +53,19 @@ If the host OS does not permit PTRACE_ATTACH, pocker will try to cumulate ptrace
 
 ![Image, Fallback threading mode](FallbackThreadingMode.png)
 
+## Overlay Filesystem
+
+Pocker runtime is capable of simulating a very basic version of `overlayfs`, provided that all layers live inside the same host filesystem.
+
+This simulation is done by (1) creating empty placeholders of all files from the overlays in the rootfs, (2) delegating readonly access to said files directly to each layer and (3) upon write access, copying files from the layer to the rootfs (CoW).
+
+![Overlay Filesystem](OverlayFileSystem.png)
+
+Caveats:
+
+* Renaming a directory from the overlay would always fail with `EXDEV`. 
+* There is no support for the usual overlayfs configs, such as `redirect_dir`.
+
 ## Project structure
 
 Sysaug crate contains the core logics of pconainer. The full name is System Augmentation, meaning a backend, low level ability to modify specific syscalls (such as remapping a path before it is sent to openat())
