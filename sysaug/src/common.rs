@@ -178,6 +178,12 @@ pub enum SysAugError {
 
     #[error("Failed to copy a file for CoW mount: {0}: {1}")]
     MountCannotCopyOnWrite(std::io::Error, String),
+
+    #[error("Failed to create a placeholder file for overlay mount: {0}: {1}")]
+    MountCannotCreatePlaceholder(std::io::Error, String),
+
+    #[error("Failed to merge directory for overlay mount: {0}: {1}")]
+    MountCannotMergeDirectory(std::io::Error, String),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -232,7 +238,7 @@ pub enum PathAction {
 }
 
 /// A file type used by the overlay filesystem.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OverlayFileType {
     /// This file is a copy-on-write of a file from an overlay mount.

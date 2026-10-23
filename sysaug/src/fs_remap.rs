@@ -240,20 +240,33 @@ impl FileSystem {
             return Ok(None);
         }
 
-        let meta_exists = if let Some(meta) = self.read_metadata(path)? {
-            meta.overlay_type.is_some()
+        if new_path.is_dir() {
+            // Check the cow metadata of directory content
+            // And make the directory itself a non-overlay rootfs file
+            let p = path.to_string_lossy().to_string();
+            let paths = _check_cow_directory(path, new_path)
+                .map_err(|e| SysAugError::MountCannotMergeDirectory(e, p))?;
+
+            for (child_path, child_new_path) in paths {
+                self._check_cow(config, syscall, args, &child_path, &child_new_path)?;
+            }
+            return Ok(None);
+        }
+
+        let overlay_type = if let Some(meta) = self.read_metadata(path)? {
+            meta.overlay_type
         } else {
-            false
+            None
         };
 
-        if meta_exists && !path.exists() {
+        if overlay_type.is_some() && !path.exists() {
             // Right now the only way to whiteout a file is to delete the content
             // while keeping the metadata
             return Ok(None);
         }
 
         let mut is_cow = false;
-        if path.exists() {
+        if path.exists() && overlay_type != Some(OverlayFileType::Placeholder) {
             is_cow = true;
         } else if syscall.writes_file {
             is_cow = true;
@@ -265,11 +278,32 @@ impl FileSystem {
         }
 
         // Create the copy
-        if is_cow && !path.exists() {
+        let has_not_copied = !path.exists() || overlay_type == Some(OverlayFileType::Placeholder);
+        if is_cow && has_not_copied {
             let p = path.to_string_lossy().to_string();
             std::fs::copy(new_path, path).map_err(|e| SysAugError::MountCannotCopyOnWrite(e, p))?;
             self.save_metadata(path, |x| {
                 x.overlay_type = Some(OverlayFileType::CoW);
+            })?;
+        }
+
+        // Or, create the placeholder
+        if !is_cow && !path.exists() {
+            let p = path.to_string_lossy().to_string();
+            if new_path.is_dir() {
+                std::fs::create_dir_all(path)
+                    .map_err(|e| SysAugError::MountCannotCreatePlaceholder(e, p))?;
+            } else {
+                if let Some(parent) = path.parent() {
+                    let p2 = parent.to_string_lossy().to_string();
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| SysAugError::MountCannotCreatePlaceholder(e, p2))?;
+                }
+                std::fs::write(path, "")
+                    .map_err(|e| SysAugError::MountCannotCreatePlaceholder(e, p))?;
+            }
+            self.save_metadata(new_path, |x| {
+                x.overlay_type = Some(OverlayFileType::Placeholder);
             })?;
         }
 
@@ -332,4 +366,21 @@ impl FileSystem {
         // (It could match a rename rule or an exclusion rule)
         Some(orig_path)
     }
+}
+
+// path is the original host path. new_path is the overlay path.
+fn _check_cow_directory(
+    path: &Path,
+    new_path: &Path,
+) -> Result<Vec<(PathBuf, PathBuf)>, std::io::Error> {
+    let mut paths: Vec<(PathBuf, PathBuf)> = Vec::new();
+    std::fs::create_dir_all(path)?;
+    let contents = std::fs::read_dir(new_path)?;
+    for entry in contents {
+        let filename = entry?.file_name();
+        let child_path = path.join(&filename);
+        let child_new_path = new_path.join(&filename);
+        paths.push((child_path, child_new_path));
+    }
+    Ok(paths)
 }
