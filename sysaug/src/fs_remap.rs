@@ -290,6 +290,8 @@ impl FileSystem {
         if is_cow && has_not_copied {
             let p = path.to_string_lossy().to_string();
             std::fs::copy(new_path, path).map_err(|e| SysAugError::MountCannotCopyOnWrite(e, p))?;
+        }
+        if is_cow {
             self.save_metadata(path, |x| {
                 x.overlay_type = Some(OverlayFileType::CoW);
             })?;
