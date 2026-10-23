@@ -240,7 +240,7 @@ impl FileSystem {
             return Ok(None);
         }
 
-        if new_path.is_dir() {
+        if new_path.is_dir() && syscall.deletion_type.is_none() {
             // Check the cow metadata of directory content
             // And make the directory itself a non-overlay rootfs file
             let p = path.to_string_lossy().to_string();
