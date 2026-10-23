@@ -248,6 +248,14 @@ impl FileSystem {
                 .map_err(|e| SysAugError::MountCannotMergeDirectory(e, p))?;
 
             for (child_path, child_new_path) in paths {
+                if child_new_path.is_dir() {
+                    let p2 = child_path.to_string_lossy().to_string();
+                    std::fs::create_dir_all(child_path)
+                        .map_err(|e| SysAugError::MountCannotMergeDirectory(e, p2))?;
+
+                    // Do not recurse into subdirectories
+                    continue;
+                }
                 self._check_cow(config, syscall, args, &child_path, &child_new_path)?;
             }
             return Ok(None);
