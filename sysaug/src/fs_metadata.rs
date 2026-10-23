@@ -127,9 +127,11 @@ impl FileSystem {
                 return Ok(());
             } else if let Ok(path) = path.canonicalize() {
                 // First, delete the file backing the hardlink
-                let _ = std::fs::remove_file(path)
-                    .map_err(SysAugError::DeleteMetadata)
-                    .map_err(display_err);
+                if !path.is_dir() {
+                    let _ = std::fs::remove_file(path)
+                        .map_err(SysAugError::DeleteMetadata)
+                        .map_err(display_err);
+                }
             }
 
             event!(
@@ -140,9 +142,11 @@ impl FileSystem {
             if !meta_path.exists() {
                 return Ok(());
             }
-            let _ = std::fs::remove_file(meta_path)
-                .map_err(SysAugError::DeleteMetadata)
-                .map_err(display_err);
+            if !meta_path.is_dir() {
+                let _ = std::fs::remove_file(meta_path)
+                    .map_err(SysAugError::DeleteMetadata)
+                    .map_err(display_err);
+            }
         }
 
         if path.is_dir() {
