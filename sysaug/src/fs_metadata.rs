@@ -10,7 +10,7 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
-use crate::common::{OverlayFileType, RootFsMetadata, SysAugError, display_err};
+use crate::common::{OverlayFileType, RootFsMetadata, SysAugError, display_err, get_metadata_dir};
 use crate::fs::FileSystem;
 use std::io::Seek;
 use std::path::{Component, Path, PathBuf};
@@ -22,10 +22,7 @@ impl FileSystem {
     // -----------------------------------------------------------------------------
 
     pub fn get_metadata_path(&self, path: &Path) -> Result<Option<PathBuf>, SysAugError> {
-        if self.consts.args.rootfs.is_none() {
-            return Ok(None);
-        }
-        let maybe_meta_path = self.__resolve_metadata_path(path)?;
+        let maybe_meta_path = Self::_resolve_metadata_path(self.consts.args.rootfs.as_ref(), path)?;
         event!(
             Level::TRACE,
             "Checking metadata for: {:?} = {:?}",
@@ -190,25 +187,12 @@ impl FileSystem {
         Ok(())
     }
 
-    pub fn get_metadata_dir(&self) -> Option<PathBuf> {
-        let args = &self.consts.args;
-        let Some(rootfs) = args.rootfs.as_ref() else {
-            return None;
-        };
-        if rootfs == Path::new("/") {
-            // If setting real root as chroot/rootfs, don't create metadata
-            return None;
-        }
-
-        // This unwrap() works on the assumption that args.rootfs is a canonicalized path
-        let mut metaname = rootfs.file_name().unwrap().to_os_string();
-        metaname.push(".metadata");
-        let metadir = rootfs.with_file_name(metaname);
-        Some(metadir)
-    }
-
-    fn __resolve_metadata_path(&self, path: &Path) -> Result<Option<PathBuf>, SysAugError> {
-        let Some(mut metadir) = self.get_metadata_dir() else {
+    /// Get the metadata path for a given path on host filesystem
+    pub(crate) fn _resolve_metadata_path(
+        rootfs: Option<&PathBuf>,
+        path: &Path,
+    ) -> Result<Option<PathBuf>, SysAugError> {
+        let Some(mut metadir) = get_metadata_dir(rootfs) else {
             return Ok(None);
         };
 
@@ -230,7 +214,7 @@ impl FileSystem {
         if canonical_path.strip_prefix(&metadir).is_ok() {
             // Check whether this is a hardlink or a symlink to a hardlink
             let cloned_path = path.to_owned();
-            let resolve_one_link = self._read_symlink(&cloned_path)?;
+            let resolve_one_link = Self::_read_symlink(&cloned_path)?;
             let is_simple_hardlink = resolve_one_link.as_ref() == Some(&canonical_path)
                 || &cloned_path == &canonical_path;
             if is_simple_hardlink {
@@ -251,9 +235,11 @@ impl FileSystem {
             }
         }
 
-        // Case 2: The file is stored in the rootfs dir
+        // Case 2: The file must be stored in the rootfs directory
         metadir.push("rootfs");
-        let rootfs = self.consts.args.rootfs.as_ref().unwrap();
+        let Some(rootfs) = rootfs else {
+            return Ok(None);
+        };
         let Ok(relative_path) = canonical_path.strip_prefix(rootfs) else {
             return Ok(None);
         };

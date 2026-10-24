@@ -11,7 +11,7 @@
 // GNU General Public License for more details.
 
 use crate::aug_paths_common::{AugmentState, StrongWeakBuilder, StrongWeakOutput};
-use crate::common::{SysAugError, SyscallInfo};
+use crate::common::{SysAugError, SyscallInfo, get_metadata_dir};
 use crate::display_err;
 use crate::handler_async::AsyncTraceeHandler;
 use std::os::unix::fs::symlink;
@@ -51,7 +51,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let Some((i, j)) = syscall.creates_hardlink else {
             return Ok(());
         };
-        let Some(metadir) = self.fs.get_metadata_dir() else {
+        let Some(metadir) = get_metadata_dir(self.consts.args.rootfs.as_ref()) else {
             return Ok(());
         };
 
@@ -160,7 +160,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let Some((i, j)) = syscall.renames_metadata else {
             return Ok(());
         };
-        let metadir = self.fs.get_metadata_dir();
+        let metadir = get_metadata_dir(self.consts.args.rootfs.as_ref());
         let i = i as usize;
         let j = j as usize;
 

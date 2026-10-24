@@ -77,7 +77,7 @@ impl FileSystem {
         })
     }
 
-    pub(crate) fn _read_symlink(&self, path: &PathBuf) -> Result<Option<PathBuf>, SysAugError> {
+    pub(crate) fn _read_symlink(path: &PathBuf) -> Result<Option<PathBuf>, SysAugError> {
         if let Ok(metadata) = std::fs::symlink_metadata(path) {
             if !metadata.file_type().is_symlink() {
                 return Ok(None);

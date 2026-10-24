@@ -237,6 +237,8 @@ pub enum PathAction {
     Override(PathBuf),
 }
 
+// ------------------- METADATA -------------------
+
 /// A file type used by the overlay filesystem.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -265,6 +267,19 @@ pub struct RootFsMetadata {
     /// This is set if and only if the file is a hard link
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hardlink_counter: Option<usize>,
+}
+
+/// Get the metadata directory for a given rootfs path, which must be canonicalized and must not be /
+pub fn get_metadata_dir(rootfs: Option<&PathBuf>) -> Option<PathBuf> {
+    let Some(rootfs) = rootfs else {
+        return None;
+    };
+    if rootfs == &PathBuf::from("/") || rootfs.is_relative() {
+        return None;
+    }
+    let mut metaname = rootfs.file_name().unwrap().to_os_string();
+    metaname.push(".metadata");
+    Some(rootfs.with_file_name(metaname))
 }
 
 // ------------------- SYSCALLS -------------------

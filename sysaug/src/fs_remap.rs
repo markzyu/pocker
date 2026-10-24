@@ -10,7 +10,7 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
-use crate::common::{OverlayFileType, PathAction, SysAugError, SyscallInfo};
+use crate::common::{OverlayFileType, PathAction, SysAugError, SyscallInfo, get_metadata_dir};
 use crate::config::{RenameAccessMode, RenameConfig};
 use crate::fs::FileSystem;
 use std::collections::HashSet;
@@ -143,8 +143,8 @@ impl FileSystem {
             }
         }
 
-        if let Some(link) = self._read_symlink(real_path)? {
-            if let Some(metadir) = self.get_metadata_dir()
+        if let Some(link) = Self::_read_symlink(real_path)? {
+            if let Some(metadir) = get_metadata_dir(self.consts.args.rootfs.as_ref())
                 && let Ok(link) = link.canonicalize()
                 && link.starts_with(&metadir)
             {
