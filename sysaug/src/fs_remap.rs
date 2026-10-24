@@ -240,7 +240,8 @@ impl FileSystem {
             return Ok(None);
         }
 
-        if real_path.is_dir() && syscall.deletion_type.is_none() {
+        let real_path_is_dir = !real_path.is_symlink() && real_path.is_dir();
+        if real_path_is_dir && syscall.deletion_type.is_none() {
             // Check the cow metadata of directory content
             // But, enumerate the directory as if it's on the rootfs, not as overlays
             // And, mark the directory itself as a CoW file so that whiteouts work
@@ -251,7 +252,7 @@ impl FileSystem {
             self._save_overlay_metadata(path, real_path, OverlayFileType::CoW)?;
 
             for (child_path, child_new_path) in paths {
-                if child_new_path.is_dir() {
+                if !child_new_path.is_symlink() && child_new_path.is_dir() {
                     let child_overlay_type = if let Some(meta) = self.read_metadata(&child_path)? {
                         meta.overlay_type
                     } else {
@@ -311,7 +312,7 @@ impl FileSystem {
         // Or, create the placeholder
         if !is_cow && !path.exists() && overlay_type != Some(OverlayFileType::CoW) {
             let p = path.to_string_lossy().to_string();
-            if real_path.is_dir() {
+            if real_path_is_dir {
                 std::fs::create_dir_all(path)
                     .map_err(|e| SysAugError::MountCannotCreatePlaceholder(e, p))?;
             } else {
