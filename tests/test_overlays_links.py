@@ -10,6 +10,7 @@ import unittest as t
 DEBUGENV = {"RUST_LOG": "TRACE", "RUST_LOG_BLOCKING": "1"}
 
 OVERLAY1_META = OVERLAYS + "/overlay1.metadata"
+OVERLAY2_META = OVERLAYS + "/overlay2.metadata"
 
 INIT_DIRS = [
     STAGING,
@@ -20,7 +21,8 @@ INIT_DIRS = [
     OVERLAYS + "/overlay1/dir1",
     OVERLAYS + "/overlay2/dir1",
     OVERLAYS + "/overlay3/dir1",
-    OVERLAY1_META + "/rootfs/chld/link0",
+    OVERLAY2_META + "/rootfs/chld/link1",
+    OVERLAY1_META + "/rootfs/chld/hardlink0",
     OVERLAY1_META + "/links",
     STAGING + "/dir1",
 ]
@@ -45,7 +47,7 @@ INIT_FILES = {
         ]
     }),
 
-    OVERLAY1_META + "/rootfs/chld/link0/meta": json.dumps({
+    OVERLAY2_META + "/rootfs/chld/link1/meta": json.dumps({
         "chmod": 0o644,
         "chownOwner": 0,
         "chownGroup": 0,
@@ -54,6 +56,16 @@ INIT_FILES = {
 
     OVERLAY1_META + "/links/id0": "content0",
     OVERLAY1_META + "/links/id0.json": json.dumps({
+        "chmod": 0o644,
+        "chownOwner": 0,
+        "chownGroup": 0,
+        "hardlinkCounter": 2,
+    }),
+
+    OVERLAY1_META + "/rootfs/chld/hardlink0/meta": json.dumps({
+        "chmod": 0o640,
+        "chownOwner": 0,
+        "chownGroup": 0,
         "hardlinkCounter": 2,
     }),
 }
@@ -135,6 +147,12 @@ class TestOverlaysWithLinks(t.TestCase):
 
         self._assert_guest_hardlink(STAGING + "/hardlink0", 2)
 
+    def test_reads_symlink_metadata_from_overlay(self):
+        cmd = f"stat -c '%a %u %g' {STAGING}/link1"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+        self.assertEqual(ans.stdout.decode("utf8").strip(), "644 0 0")
+
     def test_writes_symlink(self):
         cmd = f"ln -s -f ../../.. {STAGING}/dir1/linkA/dir1/linkB"
         ans = c.run_script(cmd.encode(), rootfs=True)
@@ -148,6 +166,12 @@ class TestOverlaysWithLinks(t.TestCase):
         self._assert_guest_reads(STAGING + "/hardlink0", "content0")
         self._assert_host_reads(STAGING + "/hardlink0", "")
 
+    def test_reads_hardlink_metadata_from_overlay(self):
+        cmd = f"stat -c '%a %u %g' {STAGING}/hardlink0"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+        self.assertEqual(ans.stdout.decode("utf8").strip(), "640 0 0")
+
     def test_read_hardlink_after_write(self):
         cmd = f"echo -n 'content1' > {STAGING}/hardlink0"
         ans = c.run_script(cmd.encode(), rootfs=True)
@@ -156,6 +180,12 @@ class TestOverlaysWithLinks(t.TestCase):
         self._assert_guest_reads(STAGING + "/hardlink0", "content1")
         self._assert_host_reads(STAGING + "/hardlink0", "content1")
         self._assert_host_reads(OVERLAY1_META + "/links/id0", "content0")
+
+        # The file should keep the same metadata from overlay
+        cmd = f"stat -c '%a %u %g' {STAGING}/hardlink0"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+        self.assertEqual(ans.stdout.decode("utf8").strip(), "640 0 0")
 
         # The file should no longer be a hardlink.
         self._assert_guest_hardlink(STAGING + "/hardlink0", 1)
