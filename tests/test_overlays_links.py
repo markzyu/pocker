@@ -109,6 +109,11 @@ class TestOverlaysWithLinks(t.TestCase):
         self.assertEqual(ans.returncode, 0)
         self.assertEqual(ans.stdout.decode("utf8").strip(), str(counter))
 
+    def _assert_host_hardlink(self, link, counter):
+        with open(link + ".json", "r") as f:
+            data = json.load(f)
+            self.assertEqual(data["hardlinkCounter"], counter)
+
     def _assert_guest_reads(self, link, content):
         cmd = f"cat {link}"
         ans = c.run_script(cmd.encode(), rootfs=True)
@@ -198,3 +203,20 @@ class TestOverlaysWithLinks(t.TestCase):
         self._assert_guest_listdir(STAGING, ["dir1", "link0", "link1", "link2"])
         self._assert_host_listdir(STAGING, ["dir1", "link0", "link1", "link2"])
         self._assert_host_reads(OVERLAY1_META + "/links/id0", "content0")
+
+    def test_new_hardlink_of_layer(self):
+        """
+        New hardlinks of a file in a readonly layer should copy the original file into
+        rootfs.metadata/links, and should not share the same counter.
+        """
+        cmd = f"ln -f {STAGING}/hardlink0 {STAGING}/hardlink1"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+
+        main_links_dir = os.path.abspath(METADATA + "/links")
+        self.assertTrue(os.readlink(STAGING + "/hardlink0").startswith(main_links_dir))
+        self.assertTrue(os.readlink(STAGING + "/hardlink1").startswith(main_links_dir))
+
+        self._assert_guest_hardlink(STAGING + "/hardlink0", 2)
+        self._assert_guest_hardlink(STAGING + "/hardlink1", 2)
+        self._assert_host_hardlink(OVERLAY1_META + "/links/id0", 2)
