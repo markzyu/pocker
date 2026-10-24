@@ -236,12 +236,11 @@ impl FileSystem {
             return Ok(Some(false));
         }
 
-        if !real_path.exists() {
+        if !_exists_nofollow(real_path) {
             return Ok(None);
         }
 
-        let real_path_is_dir = !real_path.is_symlink() && real_path.is_dir();
-        if real_path_is_dir && syscall.deletion_type.is_none() {
+        if _is_real_dir(real_path) && syscall.deletion_type.is_none() {
             // Check the cow metadata of directory content
             // But, enumerate the directory as if it's on the rootfs, not as overlays
             // And, mark the directory itself as a CoW file so that whiteouts work
@@ -252,7 +251,7 @@ impl FileSystem {
             self._save_overlay_metadata(path, real_path, OverlayFileType::CoW)?;
 
             for (child_path, child_new_path) in paths {
-                if !child_new_path.is_symlink() && child_new_path.is_dir() {
+                if _is_real_dir(&child_new_path) {
                     let child_overlay_type = if let Some(meta) = self.read_metadata(&child_path)? {
                         meta.overlay_type
                     } else {
@@ -280,14 +279,14 @@ impl FileSystem {
             None
         };
 
-        if overlay_type.is_some() && !path.exists() {
+        if overlay_type.is_some() && !_exists_nofollow(path) {
             // Right now the only way to whiteout a file is to delete the content
             // while keeping the metadata
             return Ok(None);
         }
 
         let mut is_cow = false;
-        if path.exists() && overlay_type != Some(OverlayFileType::Placeholder) {
+        if _exists_nofollow(path) && overlay_type != Some(OverlayFileType::Placeholder) {
             is_cow = true;
         } else if syscall.writes_file || syscall.deletion_type.is_some() {
             is_cow = true;
@@ -299,7 +298,8 @@ impl FileSystem {
         }
 
         // Create the copy
-        let has_not_copied = !path.exists() || overlay_type == Some(OverlayFileType::Placeholder);
+        let has_not_copied =
+            !_exists_nofollow(path) || overlay_type == Some(OverlayFileType::Placeholder);
         if is_cow && has_not_copied {
             let p = path.to_string_lossy().to_string();
             std::fs::copy(real_path, path)
@@ -310,9 +310,9 @@ impl FileSystem {
         }
 
         // Or, create the placeholder
-        if !is_cow && !path.exists() && overlay_type != Some(OverlayFileType::CoW) {
+        if !is_cow && !_exists_nofollow(path) && overlay_type != Some(OverlayFileType::CoW) {
             let p = path.to_string_lossy().to_string();
-            if real_path_is_dir {
+            if _is_real_dir(real_path) {
                 std::fs::create_dir_all(path)
                     .map_err(|e| SysAugError::MountCannotCreatePlaceholder(e, p))?;
             } else {
@@ -442,4 +442,12 @@ fn _check_cow_directory(
         paths.push((child_path, child_new_path));
     }
     Ok(paths)
+}
+
+fn _is_real_dir<P: AsRef<Path>>(path: P) -> bool {
+    !path.as_ref().is_symlink() && path.as_ref().is_dir()
+}
+
+fn _exists_nofollow<P: AsRef<Path>>(path: P) -> bool {
+    path.as_ref().exists() || path.as_ref().is_symlink()
 }
