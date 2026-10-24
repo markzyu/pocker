@@ -15,6 +15,7 @@ use crate::aug_paths_common::{AugmentState, FILE_PERMS_MASK, StrongWeakBuilder, 
 use crate::common::{SysAugError, SyscallInfo};
 use crate::handler_async::AsyncTraceeHandler;
 use pocker_ptrace::{GenericPurposeRegs, getregs};
+use std::cell::RefCell;
 use std::pin::{Pin, pin};
 use tracing::{Level, event};
 
@@ -202,6 +203,14 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             self.consts.config.rootfs.host_file_perms,
         );
 
+        let path_exists: RefCell<bool> = RefCell::new(false);
+        state.for_saved_path(|path| {
+            if path.exists() {
+                path_exists.replace(true);
+            }
+            Ok(())
+        })?;
+
         // Resume system call, and drop the WeakFutureGuard
         let _ = krsm::downgrade(future_builder).await;
 
@@ -210,6 +219,10 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         if flags & (libc::O_CREAT as usize) != 0 {
             let new_mod = state.orig_args[*perms_position as usize];
             state.for_saved_path(|path| {
+                if *path_exists.borrow() {
+                    return Ok(());
+                }
+
                 event!(Level::INFO, "Handling chmod: {:?}, {:b}", &path, new_mod);
                 let new_mod = new_mod & FILE_PERMS_MASK;
                 self.fs.save_metadata(path, |x| x.chmod = Some(new_mod))?;
