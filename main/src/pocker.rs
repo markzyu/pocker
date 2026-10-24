@@ -459,7 +459,7 @@ fn run_instance(
 
     let config_str = serde_json::to_string(&config).context("Creating pocker runtime config")?;
     let metadata_dir = get_metadata_dir(Some(&rootfs)).expect("Invalid rootfs path");
-    let config_path = metadata_dir.join("pocker.json");
+    let config_path = metadata_dir.join("config.json");
     std::fs::create_dir_all(&metadata_dir).context("Creating pocker runtime metadata dir")?;
     std::fs::write(&config_path, config_str).context("Writing pocker runtime config")?;
 
