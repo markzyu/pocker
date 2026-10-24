@@ -29,6 +29,13 @@ impl FileSystem {
                 maybe_layer_root = Some(layer.source_path.clone());
                 break;
             }
+            let metadata_dir = get_metadata_dir(Some(&layer.source_path));
+            if let Some(metadata_dir) = metadata_dir {
+                if path.starts_with(&metadata_dir) {
+                    maybe_layer_root = Some(layer.source_path.clone());
+                    break;
+                }
+            }
         }
 
         let maybe_meta_path = if maybe_layer_root.is_some() {
