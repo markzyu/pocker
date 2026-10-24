@@ -150,9 +150,10 @@ class TestOverlaysWithLinks(t.TestCase):
         for link, content in expected.items():
             self._assert_guest_readlink(link, content)
 
+        self._assert_guest_reads(STAGING + "/hardlink0", "content0")
         self._assert_guest_hardlink(STAGING + "/hardlink0", 2)
 
-    def test_reads_symlink_metadata_from_overlay(self):
+    def test_read_symlink_metadata_from_overlay(self):
         cmd = f"stat -c '%a %u %g' {STAGING}/link1"
         ans = c.run_script(cmd.encode(), rootfs=True)
         self.assertEqual(ans.returncode, 0)
@@ -171,7 +172,7 @@ class TestOverlaysWithLinks(t.TestCase):
         self._assert_guest_reads(STAGING + "/hardlink0", "content0")
         self._assert_host_reads(STAGING + "/hardlink0", "")
 
-    def test_reads_hardlink_metadata_from_overlay(self):
+    def test_read_hardlink_metadata_from_overlay(self):
         cmd = f"stat -c '%a %u %g' {STAGING}/hardlink0"
         ans = c.run_script(cmd.encode(), rootfs=True)
         self.assertEqual(ans.returncode, 0)
