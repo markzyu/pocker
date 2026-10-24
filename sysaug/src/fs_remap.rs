@@ -358,12 +358,14 @@ impl FileSystem {
             std::fs::create_dir_all(parent)
                 .map_err(|e| SysAugError::MountCannotCopyOnWrite(e, p2))?;
             std::fs::copy(&src, &dest).map_err(|e| SysAugError::MountCannotCopyOnWrite(e, p1))?;
+            self.save_metadata(path, |x| {
+                if overlay_type == OverlayFileType::CoW {
+                    x.hardlink_counter = None;
+                }
+            })?;
         }
 
         self.save_metadata(path, |x| {
-            if overlay_type == OverlayFileType::CoW {
-                x.hardlink_counter = None;
-            }
             x.overlay_type = Some(overlay_type);
         })?;
         Ok(())
