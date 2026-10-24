@@ -58,10 +58,10 @@ fn default_rename_mode() -> RenameAccessMode {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct MetadataLayerConfig {
     #[serde(default)]
-    // The path of the layer's mount point on the host OS
+    /// The path of the layer's mount point on the host OS
     pub(crate) mount_path: PathBuf,
     #[serde(default)]
-    // The path of the source directory for this layer, on the host OS
+    /// The path of the source directory for this layer, on the host OS
     pub(crate) source_path: PathBuf,
 }
 
@@ -359,24 +359,12 @@ pub(crate) fn init_rename_rules_from_config(
 pub(crate) fn init_metadata_layers_from_config(
     metadata_layers: &mut Vec<MetadataLayerConfig>,
     config: &SysAugConfig,
-    chroot: &Option<PathBuf>,
 ) {
     metadata_layers.extend(config.rootfs.metadata_layers.iter().map(Clone::clone));
     for mount in &config.mounts {
         metadata_layers.push(MetadataLayerConfig {
             source_path: PathBuf::from(&mount.source),
             mount_path: PathBuf::from(&mount.target),
-        });
-    }
-    if let Some(chroot) = chroot.as_ref() {
-        metadata_layers.push(MetadataLayerConfig {
-            source_path: chroot.clone(),
-            mount_path: chroot.clone(),
-        });
-    } else {
-        metadata_layers.push(MetadataLayerConfig {
-            source_path: PathBuf::from("/"),
-            mount_path: PathBuf::from("/"),
         });
     }
 }

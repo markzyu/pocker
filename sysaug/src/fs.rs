@@ -64,7 +64,7 @@ impl FileSystem {
         )?;
 
         let mut metadata_layers: Vec<MetadataLayerConfig> = Vec::new();
-        init_metadata_layers_from_config(&mut metadata_layers, &consts.config, &consts.args.chroot);
+        init_metadata_layers_from_config(&mut metadata_layers, &consts.config);
 
         Ok(Self {
             consts,

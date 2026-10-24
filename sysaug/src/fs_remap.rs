@@ -219,10 +219,10 @@ impl FileSystem {
     /// access is writing to a valid file such that it can be Copy on Write
     ///
     /// path is the original host path.
-    /// new_path is the host path if mapped via the current overlayfs
+    /// real_path is the host path if mapped via the current overlayfs
     ///
     /// Returns: Some(true) if writing to a copy at `path`
-    /// Returns: Some(false) if reading a file that exists at `new_path`
+    /// Returns: Some(false) if reading a file that exists at `real_path`
     /// Returns: None if neither applies (this layer doesn't contain the file)
     fn _check_cow(
         &self,
@@ -230,28 +230,25 @@ impl FileSystem {
         syscall: &SyscallInfo,
         args: &[usize],
         path: &Path,
-        new_path: &PathBuf,
+        real_path: &PathBuf,
     ) -> Result<Option<bool>, SysAugError> {
         if config.access_mode != RenameAccessMode::CopyOnWrite {
             return Ok(Some(false));
         }
 
-        if !new_path.exists() {
+        if !real_path.exists() {
             return Ok(None);
         }
 
-        if new_path.is_dir() && syscall.deletion_type.is_none() {
+        if real_path.is_dir() && syscall.deletion_type.is_none() {
             // Check the cow metadata of directory content
             // But, enumerate the directory as if it's on the rootfs, not as overlays
             // And, mark the directory itself as a CoW file so that whiteouts work
             let p = path.to_string_lossy().to_string();
-            let paths = _check_cow_directory(path, new_path)
+            let paths = _check_cow_directory(path, real_path)
                 .map_err(|e| SysAugError::MountCannotMergeDirectory(e, p))?;
 
-            self.save_metadata(new_path, |x| {
-                x.overlay_type = Some(OverlayFileType::CoW);
-                return true;
-            })?;
+            self._save_overlay_metadata(path, real_path, OverlayFileType::CoW)?;
 
             for (child_path, child_new_path) in paths {
                 if child_new_path.is_dir() {
@@ -291,7 +288,7 @@ impl FileSystem {
         let mut is_cow = false;
         if path.exists() && overlay_type != Some(OverlayFileType::Placeholder) {
             is_cow = true;
-        } else if syscall.writes_file {
+        } else if syscall.writes_file || syscall.deletion_type.is_some() {
             is_cow = true;
         } else if let Some(flag_position) = syscall.flags
             && let Some(flag) = syscall.flag_writes_file
@@ -304,18 +301,17 @@ impl FileSystem {
         let has_not_copied = !path.exists() || overlay_type == Some(OverlayFileType::Placeholder);
         if is_cow && has_not_copied {
             let p = path.to_string_lossy().to_string();
-            std::fs::copy(new_path, path).map_err(|e| SysAugError::MountCannotCopyOnWrite(e, p))?;
+            std::fs::copy(real_path, path)
+                .map_err(|e| SysAugError::MountCannotCopyOnWrite(e, p))?;
         }
         if is_cow {
-            self.save_metadata(path, |x| {
-                x.overlay_type = Some(OverlayFileType::CoW);
-            })?;
+            self._save_overlay_metadata(path, real_path, OverlayFileType::CoW)?;
         }
 
         // Or, create the placeholder
         if !is_cow && !path.exists() && overlay_type != Some(OverlayFileType::CoW) {
             let p = path.to_string_lossy().to_string();
-            if new_path.is_dir() {
+            if real_path.is_dir() {
                 std::fs::create_dir_all(path)
                     .map_err(|e| SysAugError::MountCannotCreatePlaceholder(e, p))?;
             } else {
@@ -327,12 +323,46 @@ impl FileSystem {
                 std::fs::write(path, "")
                     .map_err(|e| SysAugError::MountCannotCreatePlaceholder(e, p))?;
             }
-            self.save_metadata(new_path, |x| {
-                x.overlay_type = Some(OverlayFileType::Placeholder);
-            })?;
+            self._save_overlay_metadata(path, real_path, OverlayFileType::Placeholder)?;
         }
 
         Ok(Some(is_cow))
+    }
+
+    fn _save_overlay_metadata(
+        &self,
+        path: &Path,
+        real_path: &Path,
+        overlay_type: OverlayFileType,
+    ) -> Result<(), SysAugError> {
+        let guard = self.metadata_layers.borrow();
+        let mut maybe_rootfs: Option<PathBuf> = None;
+        for layer in guard.iter() {
+            if real_path.starts_with(&layer.source_path) {
+                maybe_rootfs = Some(layer.source_path.clone());
+                break;
+            }
+        }
+
+        // Initialize metadata by copying from the source layer
+        if let Some(src) = Self::_resolve_metadata_path(maybe_rootfs.as_ref(), real_path)?
+            && src.exists()
+            && let Some(dest) =
+                Self::_resolve_metadata_path(self.consts.args.rootfs.as_ref(), path)?
+            && !dest.exists()
+        {
+            let p1 = dest.to_string_lossy().to_string();
+            let parent = dest.parent().unwrap();
+            let p2 = parent.to_string_lossy().to_string();
+            std::fs::create_dir_all(parent)
+                .map_err(|e| SysAugError::MountCannotCopyOnWrite(e, p2))?;
+            std::fs::copy(&src, &dest).map_err(|e| SysAugError::MountCannotCopyOnWrite(e, p1))?;
+        }
+
+        self.save_metadata(path, |x| {
+            x.overlay_type = Some(overlay_type);
+        })?;
+        Ok(())
     }
 
     /// Consider dirfd (which is a host path) and return the guest path, or None if not found.

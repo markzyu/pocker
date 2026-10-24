@@ -22,7 +22,20 @@ impl FileSystem {
     // -----------------------------------------------------------------------------
 
     pub fn get_metadata_path(&self, path: &Path) -> Result<Option<PathBuf>, SysAugError> {
-        let maybe_meta_path = Self::_resolve_metadata_path(self.consts.args.rootfs.as_ref(), path)?;
+        let mut maybe_layer_root: Option<PathBuf> = None;
+        let guard = self.metadata_layers.borrow();
+        for layer in guard.iter() {
+            if path.starts_with(&layer.source_path) {
+                maybe_layer_root = Some(layer.source_path.clone());
+                break;
+            }
+        }
+
+        let maybe_meta_path = if maybe_layer_root.is_some() {
+            Self::_resolve_metadata_path(maybe_layer_root.as_ref(), path)?
+        } else {
+            Self::_resolve_metadata_path(self.consts.args.rootfs.as_ref(), path)?
+        };
         event!(
             Level::TRACE,
             "Checking metadata for: {:?} = {:?}",
