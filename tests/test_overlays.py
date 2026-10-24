@@ -134,6 +134,16 @@ class TestOverlays(t.TestCase):
         self._assert_host_reads(OVERLAYS + "/overlay1/file2", "1")
         self._assert_host_reads(OVERLAYS + "/overlay2/file2", "3")
         self._assert_host_reads(STAGING + "/file2", "a")
+
+    def test_reads_metadata_after_write(self):
+        cmd = f"echo -n 'a' > {STAGING}/file2"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+
+        cmd = f"stat -c '%a %u %g' {STAGING}/file2"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+        self.assertEqual(ans.stdout.decode("utf8").strip(), "644 0 0")
     
     def test_whiteout(self):
         cmd = f"rm -f {STAGING}/file2"
