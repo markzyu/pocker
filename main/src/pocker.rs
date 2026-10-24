@@ -389,6 +389,8 @@ fn launch_ptrace_to_untar_layers(
             }
         }
 
+        std::fs::create_dir_all(&layer_dir).context("Creating untarred layer dir")?;
+
         event!(Level::INFO, "Starting to untar layer {}", &digest);
         let self_path = std::env::current_exe()?.canonicalize()?;
         let args2 = SysAugArgs {
@@ -424,13 +426,12 @@ fn launch_ptrace_to_untar_layers(
 fn run_instance(
     cmd: String,
     args: &LaunchOptions,
-    _instance: PathBuf,
+    instance_path: PathBuf,
     layers: Vec<PathBuf>,
     shared_fd: RawFd,
     mmap_addr: usize,
 ) -> anyhow::Result<Option<u8>> {
-    let last_layer = &layers[layers.len() - 1];
-    let rootfs = last_layer.canonicalize()?;
+    let rootfs = instance_path.canonicalize()?;
     let args2 = SysAugArgs {
         chroot: Some(rootfs.clone()),
         rootfs: Some(rootfs.clone()),
