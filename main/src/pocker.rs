@@ -446,13 +446,12 @@ fn run_instance(
     };
 
     let err1 = "Cannot convert layer storage path to utf8";
-    let err2 = "Cannot convert rootfs path to utf8";
     let mut config = SysAugConfig::default();
     config.mounts = layers
         .iter()
         .map(|path| MountConfig {
             source: path.to_str().expect(err1).to_string(),
-            target: rootfs.to_str().expect(err2).to_string(),
+            target: "/".to_string(),
             fstype: "overlay".to_string(),
         })
         .collect();
