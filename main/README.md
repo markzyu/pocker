@@ -63,8 +63,10 @@ This simulation is done by (1) creating empty placeholders of all files from the
 
 Caveats:
 
-* Renaming a directory from the overlay would always fail with `EXDEV`. 
-* There is no support for the usual overlayfs configs, such as `redirect_dir`.
+* If a program opens a readonly file which was then modified to become CoW, that file will never see the changes written after.
+  * This might seem unexpected at first, but it [seems](https://docs.kernel.org/filesystems/overlayfs.html#non-standard-behavior) that real overlayfs also behaves this way
+* Hardlinks will be broken when written into, by creating a copy, in a similar way to [`index=no`](https://docs.kernel.org/filesystems/overlayfs.html#index)
+* Renaming folders from readonly layers will fail, in a similar way to [`redirect_dir=off`](https://docs.kernel.org/filesystems/overlayfs.html#redirect-dir)
 
 ## Project structure
 
