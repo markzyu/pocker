@@ -1,3 +1,4 @@
+from common import METADATA, STAGING
 import common as c
 import errno
 import os
@@ -8,7 +9,11 @@ import unittest as t
 class TestBasics(t.TestCase):
 
     def setUp(self):
-        pass
+        os.system(f"""
+            rm -rf {STAGING};
+            rm -rf {METADATA}; 
+            mkdir -p {STAGING};
+        """)
 
     def test_reports_success(self):
         self.assertEqual(c.run("--cmd echo"), 0)
