@@ -22,8 +22,6 @@ Due to this caveat, the `pocker run` command is currently "hidden", but you can 
 
 Right now pocker only supports `application/vnd.oci.image.layer.v1.tar+gzip` layer format. If your image fails to download, that's probably why.
 
-And, `pocker run` requires there to be just one layer in the current container. So most OCI images simply won't work at all.
-
 ## Caveat 3: You need to manually unset `LD_PRELOAD`
 
 Termux has a dynamic loader in `LD_PRELOAD`, which exists outside our pocker container. And the loader seems to inject  `LD_PRELOAD` back for a child process, if a parent (1) tried to unset it, and (2) if the parent was not launched with `LD_PRELOAD=""` in its explicit command line.
