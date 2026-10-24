@@ -62,11 +62,12 @@ INIT_FILES = {
         "hardlinkCounter": 2,
     }),
 
+    # This data should be ignored.
     OVERLAY1_META + "/rootfs/chld/hardlink0/meta": json.dumps({
         "chmod": 0o640,
         "chownOwner": 0,
         "chownGroup": 0,
-        "hardlinkCounter": 2,
+        "hardlinkCounter": 4,
     }),
 }
 
@@ -176,7 +177,7 @@ class TestOverlaysWithLinks(t.TestCase):
         cmd = f"stat -c '%a %u %g' {STAGING}/hardlink0"
         ans = c.run_script(cmd.encode(), rootfs=True)
         self.assertEqual(ans.returncode, 0)
-        self.assertEqual(ans.stdout.decode("utf8").strip(), "640 0 0")
+        self.assertEqual(ans.stdout.decode("utf8").strip(), "644 0 0")
 
     def test_read_hardlink_after_write(self):
         cmd = f"echo -n 'content1' > {STAGING}/hardlink0"
@@ -191,7 +192,7 @@ class TestOverlaysWithLinks(t.TestCase):
         cmd = f"stat -c '%a %u %g' {STAGING}/hardlink0"
         ans = c.run_script(cmd.encode(), rootfs=True)
         self.assertEqual(ans.returncode, 0)
-        self.assertEqual(ans.stdout.decode("utf8").strip(), "640 0 0")
+        self.assertEqual(ans.stdout.decode("utf8").strip(), "644 0 0")
 
         # The file should no longer be a hardlink.
         self._assert_guest_hardlink(STAGING + "/hardlink0", 1)
@@ -214,10 +215,16 @@ class TestOverlaysWithLinks(t.TestCase):
         ans = c.run_script(cmd.encode(), rootfs=True)
         self.assertEqual(ans.returncode, 0)
 
+        cmd = f"ln -f {STAGING}/hardlink0 {STAGING}/hardlink2"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+
         main_links_dir = os.path.abspath(METADATA + "/links")
         self.assertTrue(os.readlink(STAGING + "/hardlink0").startswith(main_links_dir))
         self.assertTrue(os.readlink(STAGING + "/hardlink1").startswith(main_links_dir))
+        self.assertTrue(os.readlink(STAGING + "/hardlink2").startswith(main_links_dir))
 
-        self._assert_guest_hardlink(STAGING + "/hardlink0", 2)
-        self._assert_guest_hardlink(STAGING + "/hardlink1", 2)
+        self._assert_guest_hardlink(STAGING + "/hardlink0", 3)
+        self._assert_guest_hardlink(STAGING + "/hardlink1", 3)
+        self._assert_guest_hardlink(STAGING + "/hardlink2", 3)
         self._assert_host_hardlink(OVERLAY1_META + "/links/id0", 2)
