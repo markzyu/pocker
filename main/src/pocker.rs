@@ -20,7 +20,7 @@ use oci_client::{
 use oci_spec::image::{Arch, Os};
 use pocker::{LaunchOptions, init_logging, launch_ptrace};
 use pocker_ptrace::setup_shared_memory;
-use pocker_sysaug::{PermsMode, SysAugArgs};
+use pocker_sysaug::{MountConfig, PermsMode, SysAugArgs, SysAugConfig, get_metadata_dir};
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
@@ -433,7 +433,7 @@ fn run_instance(
     let rootfs = last_layer.canonicalize()?;
     let args2 = SysAugArgs {
         chroot: Some(rootfs.clone()),
-        rootfs: Some(rootfs),
+        rootfs: Some(rootfs.clone()),
         perms_mode: PermsMode::RootOnly,
         fail_fast: args.fail_fast,
         fix_sigsys: args.fix_sigsys,
@@ -443,6 +443,24 @@ fn run_instance(
         gdb_at: args.gdb_at,
         use_native_loader: false,
     };
+
+    let err1 = "Cannot convert layer storage path to utf8";
+    let err2 = "Cannot convert rootfs path to utf8";
+    let mut config = SysAugConfig::default();
+    config.mounts = layers
+        .iter()
+        .map(|path| MountConfig {
+            source: path.to_str().expect(err1).to_string(),
+            target: rootfs.to_str().expect(err2).to_string(),
+            fstype: "overlay".to_string(),
+        })
+        .collect();
+
+    let config_str = serde_json::to_string(&config).context("Creating pocker runtime config")?;
+    let metadata_dir = get_metadata_dir(Some(&rootfs)).expect("Invalid rootfs path");
+    let config_path = metadata_dir.join("pocker.json");
+    std::fs::create_dir_all(&metadata_dir).context("Creating pocker runtime metadata dir")?;
+    std::fs::write(&config_path, config_str).context("Writing pocker runtime config")?;
 
     event!(
         Level::WARN,

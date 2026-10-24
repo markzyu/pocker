@@ -254,10 +254,10 @@ impl Default for PermsConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct MountConfig {
+pub struct MountConfig {
     /// An absolute path on the host OS
     #[serde(default)]
-    pub(crate) source: String,
+    pub source: String,
 
     /// An absolute path on the guest OS
     ///
@@ -266,11 +266,11 @@ pub(crate) struct MountConfig {
     /// This path must already exist. Otherwise pocker will fail due
     /// to `MountCannotCopyOnWrite`.
     #[serde(default)]
-    pub(crate) target: String,
+    pub target: String,
 
     /// Note: We only support "overlay" for now
     #[serde(default)]
-    pub(crate) fstype: String,
+    pub fstype: String,
 }
 
 impl Default for MountConfig {
@@ -296,7 +296,7 @@ pub struct SysAugConfig {
     ///
     /// Mounts that overlap and share targets, must be stored in the same filesystem / partition on host OS.
     #[serde(default)]
-    pub(crate) mounts: Vec<MountConfig>,
+    pub mounts: Vec<MountConfig>,
 }
 
 pub(crate) fn init_rename_rules_from_config(
