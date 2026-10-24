@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess as sub
 
@@ -60,6 +61,47 @@ def run_elf_chroot(elf_path, timeout=7, stderr=None, env=None, **kwargs):
         tests/fixtures/00-setup-chroot.sh '{elf_path}' {STAGING}
     """
     os.system(setup_cmd)
+
+    cmd = _get_cmd(chroot=True, **kwargs)
+    if IS_ANDROID_TERMUX:
+        cmd.append("--use-native-loader")
+    cmd.append("--cmd")
+    cmd.append("/executable")
+    cmd_expr = " ".join(cmd)
+    print(f"cmd = {cmd_expr}")
+
+    return sub.run(
+        cmd, 
+        input=b"",
+        timeout=timeout,
+        stdout=sub.PIPE,
+        stderr=stderr or os.sys.stderr,
+        env=env or {}
+    )
+
+def run_layered_chroot(elf_path, timeout=7, stderr=None, env=None, **kwargs):
+    """
+    Run an ELF binary file with a proper overlayfs
+    """
+    if isinstance(elf_path, bytes):
+        elf_path = elf_path.decode("utf8")
+
+    setup_cmd = f"""
+        mkdir -p {STAGING} {METADATA} {OVERLAYS}/overlay1
+        tests/fixtures/00-setup-chroot.sh '{elf_path}' {OVERLAYS}/overlay1
+    """
+    os.system(setup_cmd)
+
+    with open(METADATA + "/config.json", "w") as f:
+        f.write(json.dumps({
+            "mounts": [
+                {
+                    "source": os.path.abspath(OVERLAYS + "/overlay1"),
+                    "target": "/",
+                    "fstype": "overlay"
+                }
+            ]
+        }))
 
     cmd = _get_cmd(chroot=True, **kwargs)
     if IS_ANDROID_TERMUX:

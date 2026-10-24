@@ -114,6 +114,20 @@ class TestOverlays(t.TestCase):
         for file, content in expected.items():
             self._assert_guest_reads(file, content)
 
+    def test_execve_on_layered_chroot(self):
+        ans = c.run_layered_chroot("tests/fixtures/1a-fchown.out")
+        stdout = ans.stdout.decode("utf8")
+        print("Actual stdout:")
+        print(stdout)
+        print()
+        self.assertEqual(
+            stdout,
+            (
+                "fstatat(/x): owner = 0 group = 0\n"
+            ),
+        )
+        self.assertEqual(ans.returncode, 0)
+
     def test_reads_metadata_from_overlay(self):
         cmd = f"stat -c '%a %u %g' {STAGING}/file0"
         ans = c.run_script(cmd.encode(), rootfs=True)
