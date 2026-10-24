@@ -412,7 +412,17 @@ impl FileSystem {
             return None;
         };
 
-        // Strip the prefix if it matches
+        // Strip prefix using metadata layers if possible
+        let guard = self.metadata_layers.borrow();
+        for layer in guard.iter() {
+            if orig_path.starts_with(&layer.mount_path) {
+                let stripped = orig_path.strip_prefix(&layer.mount_path).unwrap();
+                let root = PathBuf::from("/");
+                return Some(root.join(stripped));
+            }
+        }
+
+        // Strip self.path_prefix as fallback
         let path_prefix = {
             let default = PathBuf::from("/");
             let guard = self.path_prefix.borrow();

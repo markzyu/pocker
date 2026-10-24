@@ -51,20 +51,22 @@ impl FileSystem {
             path_prefix = consts.args.chroot.clone();
         }
 
+        let chroot_path = match path_prefix.as_ref() {
+            Some(path) => path.clone(),
+            None => PathBuf::from("/"),
+        };
+
         let mut rename_host_paths: Vec<RenameConfig> = Vec::new();
         let mut rename_guest_paths: Vec<RenameConfig> = Vec::new();
         init_rename_rules_from_config(
             &mut rename_host_paths,
             &mut rename_guest_paths,
             &consts.config,
-            match path_prefix.as_ref() {
-                Some(path) => path.clone(),
-                None => PathBuf::from("/"),
-            },
+            &chroot_path,
         )?;
 
         let mut metadata_layers: Vec<MetadataLayerConfig> = Vec::new();
-        init_metadata_layers_from_config(&mut metadata_layers, &consts.config);
+        init_metadata_layers_from_config(&mut metadata_layers, &consts.config, &chroot_path);
 
         Ok(Self {
             consts,

@@ -303,7 +303,7 @@ pub(crate) fn init_rename_rules_from_config(
     rename_host_paths: &mut Vec<RenameConfig>,
     rename_guest_paths: &mut Vec<RenameConfig>,
     config: &SysAugConfig,
-    chroot_path: PathBuf,
+    chroot_path: &PathBuf,
 ) -> Result<(), SysAugError> {
     rename_host_paths.extend(config.rootfs.rename_host_paths.iter().map(Clone::clone));
     rename_guest_paths.extend(config.rootfs.rename_guest_paths.iter().map(Clone::clone));
@@ -359,12 +359,21 @@ pub(crate) fn init_rename_rules_from_config(
 pub(crate) fn init_metadata_layers_from_config(
     metadata_layers: &mut Vec<MetadataLayerConfig>,
     config: &SysAugConfig,
+    chroot_path: &PathBuf,
 ) {
     metadata_layers.extend(config.rootfs.metadata_layers.iter().map(Clone::clone));
     for mount in &config.mounts {
+        let target_path = PathBuf::from(&mount.target);
+
+        // Format the target path (a guest path) into a host path
+        let Ok(target_path) = target_path.strip_prefix("/") else {
+            continue;
+        };
+        let target_path = chroot_path.join(target_path);
+
         metadata_layers.push(MetadataLayerConfig {
             source_path: PathBuf::from(&mount.source),
-            mount_path: PathBuf::from(&mount.target),
+            mount_path: target_path,
         });
     }
 }
