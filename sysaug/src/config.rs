@@ -56,7 +56,7 @@ fn default_rename_mode() -> RenameAccessMode {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct GetdentsLayerConfig {
+pub(crate) struct MetadataLayerConfig {
     #[serde(default)]
     // The path of the layer's mount point on the host OS
     pub(crate) mount_path: PathBuf,
@@ -88,11 +88,11 @@ pub(crate) struct RootfsConfig {
     #[serde(default = "default_rename_configs")]
     pub(crate) rename_host_paths: Vec<RenameConfig>,
 
-    /// Absolute paths to host directories that are layered on top of the rootfs.
+    /// Absolute paths to other rootfs folders that share metadata with this rootfs.
     ///
     /// Another way to set this is through the `mounts` section of `SysAugConfig`.
     #[serde(default)]
-    pub(crate) getdents_layers: Vec<GetdentsLayerConfig>,
+    pub(crate) metadata_layers: Vec<MetadataLayerConfig>,
 }
 
 fn default_passthroughs() -> Vec<String> {
@@ -142,7 +142,7 @@ impl Default for RootfsConfig {
             host_gid: default_host_gid(),
             rename_guest_paths: default_rename_configs(),
             rename_host_paths: default_rename_configs(),
-            getdents_layers: Vec::new(),
+            metadata_layers: Vec::new(),
         }
     }
 }
@@ -356,25 +356,25 @@ pub(crate) fn init_rename_rules_from_config(
     Ok(())
 }
 
-pub(crate) fn init_getdents_layers_from_config(
-    getdents_layers: &mut Vec<GetdentsLayerConfig>,
+pub(crate) fn init_metadata_layers_from_config(
+    metadata_layers: &mut Vec<MetadataLayerConfig>,
     config: &SysAugConfig,
     chroot: &Option<PathBuf>,
 ) {
-    getdents_layers.extend(config.rootfs.getdents_layers.iter().map(Clone::clone));
+    metadata_layers.extend(config.rootfs.metadata_layers.iter().map(Clone::clone));
     for mount in &config.mounts {
-        getdents_layers.push(GetdentsLayerConfig {
+        metadata_layers.push(MetadataLayerConfig {
             source_path: PathBuf::from(&mount.source),
             mount_path: PathBuf::from(&mount.target),
         });
     }
     if let Some(chroot) = chroot.as_ref() {
-        getdents_layers.push(GetdentsLayerConfig {
+        metadata_layers.push(MetadataLayerConfig {
             source_path: chroot.clone(),
             mount_path: chroot.clone(),
         });
     } else {
-        getdents_layers.push(GetdentsLayerConfig {
+        metadata_layers.push(MetadataLayerConfig {
             source_path: PathBuf::from("/"),
             mount_path: PathBuf::from("/"),
         });
