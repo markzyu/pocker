@@ -136,11 +136,11 @@ class TestOverlays(t.TestCase):
         self._assert_host_reads(STAGING + "/file2", "a")
 
     def test_reads_metadata_after_write(self):
-        cmd = f"echo -n 'a' >> {STAGING}/file2"
+        cmd = f"echo -n 'a' >> {STAGING}/file0"
         ans = c.run_script(cmd.encode(), rootfs=True)
         self.assertEqual(ans.returncode, 0)
 
-        cmd = f"stat -c '%a %u %g' {STAGING}/file2"
+        cmd = f"stat -c '%a %u %g' {STAGING}/file0"
         ans = c.run_script(cmd.encode(), rootfs=True)
         self.assertEqual(ans.returncode, 0)
         self.assertEqual(ans.stdout.decode("utf8").strip(), "644 0 0")
