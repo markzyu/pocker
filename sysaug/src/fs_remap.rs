@@ -361,6 +361,9 @@ impl FileSystem {
         }
 
         self.save_metadata(path, |x| {
+            if overlay_type == OverlayFileType::CoW {
+                x.hardlink_counter = None;
+            }
             x.overlay_type = Some(overlay_type);
         })?;
         Ok(())
