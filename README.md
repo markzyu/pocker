@@ -12,13 +12,9 @@ My project is still in its early stage. It barely works right now. Basic shell c
 LD_PRELOAD="" cargo run --bin pocker -- run alpine
 ```
 
-## Caveat 1: `pocker run` cannot actually keep the container layer intact
+## Caveat 1: `pocker run` support for overlayfs is experimental
 
-Containers expect their layers to be readonly.
-
-As of this early version, pocker writes directly to the layer. So it would write changes to that layer, even if it's supposed to be readonly.
-
-This caveat will be resolved later, by adding support for fs overlays.
+Containers expect their layers to be readonly, and expect overlayfs to work properly. But this support is experimental, not fully tested, and might lead to data loss.
 
 Due to this caveat, the `pocker run` command is currently "hidden", but you can still invoke it if you'd like to.
 
