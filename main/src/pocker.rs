@@ -28,8 +28,11 @@ use std::path::PathBuf;
 use tracing::{Level, event};
 use webpki_root_certs::TLS_SERVER_ROOT_CERTS;
 
-const LAYER_TYPE_TAR_GZ: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
 const LOCKFILE_RUNNING: &str = ".pocker-running";
+const SUPPORTED_LAYER_TYPES: &[&str] = &[
+    "application/vnd.oci.image.layer.v1.tar+gzip",
+    "application/vnd.docker.image.rootfs.diff.tar.gzip",
+];
 
 #[derive(Parser, Debug)]
 #[command(version = "0.3.0", author = "Zhongzhi Yu")]
@@ -333,7 +336,7 @@ fn download_image(
         let reference: oci_client::Reference = reference_str.parse()?;
         let auth = oci_client::secrets::RegistryAuth::Anonymous;
         let image = client
-            .pull(&reference, &auth, vec![LAYER_TYPE_TAR_GZ])
+            .pull(&reference, &auth, SUPPORTED_LAYER_TYPES.to_vec())
             .await?;
         Ok(image)
     });
@@ -344,8 +347,8 @@ fn download_image(
         let digest = layer.sha256_digest();
         hashes.push(digest.clone());
 
-        if !layer.media_type.ends_with(".tar+gzip") {
-            bail!("Unknown image format: {}", image.config.media_type);
+        if !SUPPORTED_LAYER_TYPES.contains(&layer.media_type.as_str()) {
+            bail!("Unknown image format: {}", &layer.media_type);
         }
 
         let tar_name = format!("{}.tar.gz", &digest);
