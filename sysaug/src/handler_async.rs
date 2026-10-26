@@ -550,6 +550,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 if self.parent.is_none() {
                     self.initialize_tracee_seccomp().await?;
                 }
+                self.initialize_tracee_chdir().await?;
                 is_first_loop_after_init = true;
             }
         }
@@ -665,6 +666,30 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             "Tracee mounted mmap address: {:x}",
             mmap_regs.syscall_retval()
         );
+        Ok(())
+    }
+
+    /// Initialize only the first process to chdir to the chroot directory
+    async fn initialize_tracee_chdir(&self) -> Result<(), SysAugError> {
+        if self.consts.args.chroot.is_none() {
+            return Ok(());
+        };
+        if self.parent.is_some() {
+            return Ok(());
+        }
+
+        let chroot_addr = self.tracee_stack_append_path(PathBuf::from("/"))?;
+        let chdir_regs = unsafe {
+            self._insert_syscall_during_init(
+                "SYS_chdir",
+                libc::SYS_chdir as usize,
+                [chroot_addr, 0, 0, 0, 0, 0],
+            )
+            .await?
+        };
+        if chdir_regs.syscall_retval() != 0 {
+            return Err(SysAugError::ChdirInit);
+        }
         Ok(())
     }
 
