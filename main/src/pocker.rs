@@ -310,7 +310,17 @@ fn download_image(
         let client = get_oci_client();
         let reference: oci_client::Reference = reference_str.parse()?;
         let auth = oci_client::secrets::RegistryAuth::Anonymous;
-        let (image, _) = rt.block_on(client.pull_image_manifest(&reference, &auth))?;
+        let (image, _, config) = rt.block_on(client.pull_manifest_and_config(&reference, &auth))?;
+
+        let manifest_str = serde_json::to_string(&image).context("Saving image manifest")?;
+        let manifest_name = format!("{}.manifest.json", cache_name);
+        let manifest_path = cache_dir.join(manifest_name);
+        std::fs::write(&manifest_path, manifest_str).context("Saving image manifest")?;
+
+        // let config_str = serde_json::to_string(&config).context("Saving image config")?;
+        let config_name = format!("{}.config.json", cache_name);
+        let config_path = cache_dir.join(config_name);
+        std::fs::write(&config_path, &config).context("Saving image config")?;
 
         if hashes.len() > 0 && hashes.len() == image.layers.len() {
             let actual: Vec<_> = hashes.iter().map(|x| x.to_string()).collect();
