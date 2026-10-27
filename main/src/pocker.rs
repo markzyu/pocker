@@ -15,12 +15,13 @@ use clap::{Args, Parser, Subcommand};
 use flate2::read::GzDecoder;
 use oci_client::{
     client::{Certificate, CertificateEncoding},
-    manifest::ImageIndexEntry,
+    manifest::{ImageIndexEntry, OciImageManifest},
 };
 use oci_spec::image::{Arch, Os};
 use pocker::{LaunchOptions, init_logging, launch_ptrace};
 use pocker_ptrace::setup_shared_memory;
 use pocker_sysaug::{MountConfig, PermsMode, SysAugArgs, SysAugConfig, get_metadata_dir};
+use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
@@ -147,14 +148,14 @@ fn main() -> anyhow::Result<()> {
                 image.clone(),
                 layers,
                 &launch,
-                download,
+                &download,
                 shared_fd.as_raw_fd(),
                 mmap_addr,
             )?;
 
             event!(Level::INFO, "Creating instance...");
             let instances_dir = storage_dir.join("instances");
-            let instance_name = name.unwrap_or(image);
+            let instance_name = name.unwrap_or(image.clone());
             let instance = instances_dir.join(&instance_name);
             let instance_running = instances_dir.join(LOCKFILE_RUNNING);
             if instance_running.exists() {
@@ -173,8 +174,14 @@ fn main() -> anyhow::Result<()> {
                 writeln!(file, "")?;
             }
 
-            let cmd = cmd.unwrap_or(vec!["/bin/sh".to_string()]);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all() // Enables both the I/O driver and the time driver
+                .build()?;
+            let reference_str = image_name_to_reference_str(&download, &image);
+            let (_, config) = fetch_manifest_and_config_cached(&rt, &download, &reference_str)?;
+            let cmd = cmd.unwrap_or(config.cmd);
             event!(Level::INFO, "Running command: {:?}", &cmd);
+
             let result = run_instance(
                 cmd,
                 &launch,
@@ -207,7 +214,7 @@ fn main() -> anyhow::Result<()> {
                     image,
                     layers,
                     &launch,
-                    download,
+                    &download,
                     shared_fd.as_raw_fd(),
                     mmap_addr,
                 )?;
@@ -269,6 +276,99 @@ fn get_storage_dir(args: &ImageDownloadArgs) -> anyhow::Result<PathBuf> {
     Ok(storage_dir)
 }
 
+fn get_cache_path(
+    args: &ImageDownloadArgs,
+    reference_str: &String,
+) -> anyhow::Result<(PathBuf, String)> {
+    let storage_dir = get_storage_dir(args)?;
+    let layers_dir = storage_dir.join("layers");
+    let cache_dir = storage_dir.join("cache");
+    std::fs::create_dir_all(&layers_dir).context("Creating pocker download cache")?;
+    std::fs::create_dir_all(&cache_dir).context("Creating pocker download cache")?;
+
+    let cache_name = reference_str
+        .strip_prefix(&args.registry_host)
+        .unwrap()
+        .replace("_", "__")
+        .replace("/", "_");
+    Ok((cache_dir, cache_name))
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct OciConfig {
+    env: Vec<String>,
+    cmd: Vec<String>,
+    working_dir: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OciConfigRoot {
+    config: OciConfig,
+}
+
+fn image_name_to_reference_str(args: &ImageDownloadArgs, image_name: &String) -> String {
+    if image_name.contains('/') {
+        format!("{}/{}", args.registry_host, &image_name)
+    } else {
+        format!(
+            "{}/{}/{}",
+            args.registry_host, args.registry_namespace, &image_name
+        )
+    }
+}
+
+fn fetch_manifest_and_config_cached(
+    rt: &tokio::runtime::Runtime,
+    args: &ImageDownloadArgs,
+    reference_str: &String,
+) -> anyhow::Result<(OciImageManifest, OciConfig)> {
+    let (cache_dir, cache_name) = get_cache_path(args, reference_str)?;
+    let manifest_path = cache_dir.join(format!("{}.manifest.json", cache_name));
+    let config_path = cache_dir.join(format!("{}.config.json", cache_name));
+
+    if manifest_path.exists() && config_path.exists() {
+        let err = "Failed to read manifest or config from cache";
+        let manifest_str = std::fs::read_to_string(&manifest_path).context(err)?;
+        let config_str = std::fs::read_to_string(&config_path).context(err)?;
+        let manifest: OciImageManifest = serde_json::from_str(&manifest_str).context(err)?;
+        let config: OciConfigRoot = serde_json::from_str(&config_str).context(err)?;
+        return Ok((manifest, config.config));
+    }
+
+    let client = get_oci_client();
+    let reference: oci_client::Reference = reference_str.parse()?;
+    let auth = oci_client::secrets::RegistryAuth::Anonymous;
+    let (image, _, config) = rt.block_on(client.pull_manifest_and_config(&reference, &auth))?;
+    save_manifest_and_config(args, &image, &config, &reference_str)?;
+
+    let config: OciConfigRoot = serde_json::from_str(&config)?;
+    Ok((image, config.config))
+}
+
+fn save_manifest_and_config<C>(
+    args: &ImageDownloadArgs,
+    image: &OciImageManifest,
+    config: C,
+    reference_str: &String,
+) -> anyhow::Result<()>
+where
+    C: AsRef<[u8]>,
+{
+    let (cache_dir, cache_name) = get_cache_path(args, reference_str)?;
+    let manifest_str = serde_json::to_string(&image).context("Saving image manifest")?;
+    let manifest_name = format!("{}.manifest.json", cache_name);
+    let manifest_path = cache_dir.join(manifest_name);
+    std::fs::write(&manifest_path, manifest_str).context("Saving image manifest")?;
+
+    // let config_str = serde_json::to_string(&config).context("Saving image config")?;
+    let config_name = format!("{}.config.json", cache_name);
+    let config_path = cache_dir.join(config_name);
+    std::fs::write(&config_path, &config).context("Saving image config")?;
+    Ok(())
+}
+
 /// Downloads only the tar files, if they don't exist already.
 /// Returns a list of layer ids
 fn download_image(
@@ -281,26 +381,9 @@ fn download_image(
         .build()?;
 
     // 2. Execute the future, blocking the current thread until completion
-    let reference_str = if image_name.contains('/') {
-        format!("{}/{}", args.registry_host, &image_name)
-    } else {
-        format!(
-            "{}/{}/{}",
-            args.registry_host, args.registry_namespace, &image_name
-        )
-    };
+    let reference_str = image_name_to_reference_str(args, &image_name);
 
-    let storage_dir = get_storage_dir(args)?;
-    let layers_dir = storage_dir.join("layers");
-    let cache_dir = storage_dir.join("cache");
-    std::fs::create_dir_all(&layers_dir).context("Creating pocker download cache")?;
-    std::fs::create_dir_all(&cache_dir).context("Creating pocker download cache")?;
-
-    let cache_name = reference_str
-        .strip_prefix(&args.registry_host)
-        .unwrap()
-        .replace("_", "__")
-        .replace("/", "_");
+    let (cache_dir, cache_name) = get_cache_path(args, &reference_str)?;
     let cache_path = cache_dir.join(&cache_name);
     if cache_path.exists() {
         let err_ctx = "Checking cached image digests";
@@ -309,20 +392,7 @@ fn download_image(
         file.read_to_string(&mut cached_image).context(err_ctx)?;
         let hashes: Vec<_> = cached_image.trim().split(",").collect();
 
-        let client = get_oci_client();
-        let reference: oci_client::Reference = reference_str.parse()?;
-        let auth = oci_client::secrets::RegistryAuth::Anonymous;
-        let (image, _, config) = rt.block_on(client.pull_manifest_and_config(&reference, &auth))?;
-
-        let manifest_str = serde_json::to_string(&image).context("Saving image manifest")?;
-        let manifest_name = format!("{}.manifest.json", cache_name);
-        let manifest_path = cache_dir.join(manifest_name);
-        std::fs::write(&manifest_path, manifest_str).context("Saving image manifest")?;
-
-        // let config_str = serde_json::to_string(&config).context("Saving image config")?;
-        let config_name = format!("{}.config.json", cache_name);
-        let config_path = cache_dir.join(config_name);
-        std::fs::write(&config_path, &config).context("Saving image config")?;
+        let (image, _) = fetch_manifest_and_config_cached(&rt, args, &reference_str)?;
 
         if hashes.len() > 0 && hashes.len() == image.layers.len() {
             let actual: Vec<_> = hashes.iter().map(|x| x.to_string()).collect();
@@ -353,6 +423,8 @@ fn download_image(
         Ok(image)
     });
     let image = image?;
+    let manifest = image.manifest.expect("No manifest found in image");
+    save_manifest_and_config(args, &manifest, &image.config.data, &reference_str)?;
 
     let mut hashes: Vec<String> = Vec::new();
     for layer in image.layers {
@@ -380,7 +452,7 @@ fn launch_ptrace_to_untar_layers(
     image_name: String,
     layers: Vec<String>,
     launch: &LaunchOptions,
-    args: ImageDownloadArgs,
+    args: &ImageDownloadArgs,
     shared_fd: RawFd,
     mmap_addr: usize,
 ) -> anyhow::Result<Vec<PathBuf>> {

@@ -1440,6 +1440,7 @@ dependencies = [
  "pocker-ptrace",
  "pocker-sysaug",
  "rustls",
+ "serde",
  "serde_json",
  "tar",
  "thiserror 1.0.69",
