@@ -45,9 +45,9 @@ pub struct CLIArgs {
     #[arg(long)]
     pub show_syscalls: bool,
 
-    /// Override the command to execute
+    /// Override the command to execute. Repeat this argument to supply arguments to the command.
     #[arg(long, default_value = "bash")]
-    pub cmd: String,
+    pub cmd: Vec<String>,
 
     #[command(flatten)]
     pub launch: LaunchOptions,
@@ -103,7 +103,8 @@ fn actual_main() -> Result<(), CLIError> {
 
     let (shared_fd, mmap_addr) = setup_shared_memory().expect("Preparing ptrace");
 
-    let cmd = std::process::Command::new(&args.cmd);
+    let mut cmd = std::process::Command::new(&args.cmd[0]);
+    cmd.args(&args.cmd[1..]);
     let retcode = launch_ptrace(
         args2,
         cmd,

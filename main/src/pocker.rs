@@ -66,7 +66,8 @@ enum Commands {
         image: String,
 
         /// An optional command to run. This defaults to /bin/sh, for now, not the one specified in the image.
-        cmd: Option<String>,
+        #[arg(long)]
+        cmd: Option<Vec<String>>,
 
         /// Give a different name to this instance of the container
         #[arg(long)]
@@ -172,7 +173,8 @@ fn main() -> anyhow::Result<()> {
                 writeln!(file, "")?;
             }
 
-            let cmd = cmd.unwrap_or("/bin/sh".to_string());
+            let cmd = cmd.unwrap_or(vec!["/bin/sh".to_string()]);
+            event!(Level::INFO, "Running command: {:?}", &cmd);
             let result = run_instance(
                 cmd,
                 &launch,
@@ -437,7 +439,7 @@ fn launch_ptrace_to_untar_layers(
 }
 
 fn run_instance(
-    cmd: String,
+    cmd: Vec<String>,
     args: &LaunchOptions,
     instance_path: PathBuf,
     layers: Vec<PathBuf>,
@@ -490,8 +492,9 @@ fn run_instance(
         std::env::set_var("PATH", "/bin:/sbin:/usr/bin:/usr/sbin");
     }
 
-    let cmd = std::process::Command::new(&cmd);
-    match launch_ptrace(args2, cmd, args.fix_attach, shared_fd, mmap_addr) {
+    let mut child = std::process::Command::new(&cmd[0]);
+    child.args(&cmd[1..]);
+    match launch_ptrace(args2, child, args.fix_attach, shared_fd, mmap_addr) {
         Err(e) => bail!("Error: {:?}", e),
         Ok(ans) => Ok(ans),
     }
