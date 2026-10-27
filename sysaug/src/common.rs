@@ -193,6 +193,8 @@ pub enum SysAugError {
 pub struct SysAugArgs {
     pub chroot: Option<PathBuf>,
     pub rootfs: Option<PathBuf>,
+    /// Override the initial working directory of the first tracee
+    pub workdir: Option<PathBuf>,
     pub perms_mode: PermsMode,
     pub fail_fast: bool,
     pub fix_sigsys: bool,

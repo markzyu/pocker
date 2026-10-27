@@ -298,9 +298,12 @@ fn get_cache_path(
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct OciConfig {
+    #[serde(default)]
     env: Vec<String>,
+    #[serde(default)]
     cmd: Vec<String>,
-    working_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    working_dir: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -484,6 +487,7 @@ fn launch_ptrace_to_untar_layers(
         let args2 = SysAugArgs {
             chroot: None,
             rootfs: Some(layer_dir.clone()),
+            workdir: None,
             perms_mode: PermsMode::RootOnly,
             fail_fast: launch.fail_fast,
             fix_sigsys: launch.fix_sigsys,
@@ -524,6 +528,7 @@ fn run_instance(
     let args2 = SysAugArgs {
         chroot: Some(rootfs.clone()),
         rootfs: Some(rootfs.clone()),
+        workdir: image_config.working_dir.map(Into::into),
         perms_mode: PermsMode::RootOnly,
         fail_fast: args.fail_fast,
         fix_sigsys: args.fix_sigsys,

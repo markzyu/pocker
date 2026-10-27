@@ -85,6 +85,7 @@ fn actual_main() -> Result<(), CLIError> {
     let args2 = SysAugArgs {
         chroot: canonicalize_clone(&args.chroot)?,
         rootfs: canonicalize_clone(&args.rootfs)?.or_else(|| chroot_copy),
+        workdir: None,
         perms_mode: if args.root {
             PermsMode::RootOnly
         } else if args.sudo {
