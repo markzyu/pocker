@@ -179,7 +179,7 @@ fn main() -> anyhow::Result<()> {
                 .build()?;
             let reference_str = image_name_to_reference_str(&download, &image);
             let (_, config) = fetch_manifest_and_config_cached(&rt, &download, &reference_str)?;
-            let cmd = cmd.unwrap_or(config.cmd);
+            let cmd = cmd.unwrap_or(config.cmd.clone());
             event!(Level::INFO, "Running command: {:?}", &cmd);
 
             let result = run_instance(
@@ -187,6 +187,7 @@ fn main() -> anyhow::Result<()> {
                 &launch,
                 instance,
                 layers,
+                config,
                 shared_fd.as_raw_fd(),
                 mmap_addr,
             );
@@ -515,6 +516,7 @@ fn run_instance(
     args: &LaunchOptions,
     instance_path: PathBuf,
     layers: Vec<PathBuf>,
+    image_config: OciConfig,
     shared_fd: RawFd,
     mmap_addr: usize,
 ) -> anyhow::Result<Option<u8>> {
@@ -558,10 +560,26 @@ fn run_instance(
         "Pocker will overwrite a layer to start the container!"
     );
 
-    // TODO: move these into a config or command line argument
+    // Clear all environment variables. Set new ENV according to image config
     unsafe {
-        std::env::remove_var("LD_PRELOAD");
+        let keys: Vec<String> = std::env::vars().map(|(k, _)| k).collect();
+        for key in keys {
+            std::env::remove_var(key);
+        }
+
+        // Provide a few defaults
+        std::env::set_var("LD_PRELOAD", "");
         std::env::set_var("PATH", "/bin:/sbin:/usr/bin:/usr/sbin");
+
+        for env_str in image_config.env {
+            if let Some(idx) = env_str.find('=')
+                && idx < env_str.len()
+            {
+                let key = &env_str[..idx];
+                let val = &env_str[idx + 1..];
+                std::env::set_var(key, val);
+            }
+        }
     }
 
     let mut child = std::process::Command::new(&cmd[0]);
