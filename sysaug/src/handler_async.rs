@@ -678,8 +678,13 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             return Ok(());
         }
 
-        let workdir = PathBuf::from("/");
-        let workdir = self.consts.args.workdir.clone().unwrap_or(workdir);
+        let mut workdir = PathBuf::from("/");
+        if let Some(dir) = self.consts.args.workdir.clone() {
+            if !dir.is_empty() {
+                workdir = dir;
+            }
+        }
+        event!(Level::WARN, "TESTT {:?}", &workdir);
         let chroot_addr = self.tracee_stack_append_path(workdir)?;
         let chdir_regs = unsafe {
             self._insert_syscall_during_init(
