@@ -474,8 +474,8 @@ mod tests {
     #[test]
     fn test_calc_real_path_writes_with_cow_overlays() {
         let (fs, dir, _) = setup_with_cow_overlays_config();
-        let (maybe_syscall, _) = get_syscall(libc::SYS_mkdir as usize);
-        let syscall = maybe_syscall.expect("SYS_mkdir syscall info");
+        let (maybe_syscall, _) = get_syscall(libc::SYS_mkdirat as usize);
+        let syscall = maybe_syscall.expect("SYS_mkdirat syscall info");
 
         let path1 = PathBuf::from("/A");
         let ans1 = fs.calc_real_path(path1.as_path(), syscall, &[]).unwrap();
@@ -524,8 +524,8 @@ mod tests {
     #[test]
     fn test_calc_real_path_cow_whiteout_file() {
         let (fs, dir, _) = setup_with_cow_overlays_config();
-        let (maybe_syscall, _) = get_syscall(libc::SYS_mkdir as usize);
-        let syscall = maybe_syscall.expect("SYS_mkdir syscall info");
+        let (maybe_syscall, _) = get_syscall(libc::SYS_mkdirat as usize);
+        let syscall = maybe_syscall.expect("SYS_mkdirat syscall info");
         std::fs::create_dir_all(dir.join("mnt/abc")).expect("test setup");
 
         // First, create cow copies
@@ -565,8 +565,8 @@ mod tests {
     #[test]
     fn test_calc_real_path_cow_rename_files() {
         let (fs, dir, dir2) = setup_with_cow_overlays_config();
-        let (maybe_syscall, _) = get_syscall(libc::SYS_mkdir as usize);
-        let syscall = maybe_syscall.expect("SYS_mkdir syscall info");
+        let (maybe_syscall, _) = get_syscall(libc::SYS_mkdirat as usize);
+        let syscall = maybe_syscall.expect("SYS_mkdirat syscall info");
         std::fs::create_dir_all(dir.join("mnt/abc")).expect("test setup");
 
         // First, create cow copies

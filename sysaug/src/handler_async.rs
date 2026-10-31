@@ -686,7 +686,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         }
 
         // Calculate the real path of workdir in CoW mode (with mkdir instead of chdir)
-        let (maybe_syscall, _) = get_syscall(libc::SYS_mkdir as usize);
+        let (maybe_syscall, _) = get_syscall(libc::SYS_mkdirat as usize);
         let syscall = maybe_syscall.ok_or(SysAugError::InitWorkdir)?;
         let maybe_workdir = self.fs.calc_real_path(workdir.as_path(), syscall, &[])?;
         let PathAction::Override(workdir) = maybe_workdir else {
