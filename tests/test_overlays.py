@@ -20,6 +20,7 @@ INIT_DIRS = [
     OVERLAYS + "/overlay3",
     OVERLAYS + "/overlay1/dir1",
     OVERLAYS + "/overlay2/dir1",
+    OVERLAYS + "/overlay2/dir1/dir2",
     OVERLAYS + "/overlay3/dir1",
     OVERLAY1_META + "/rootfs/chld/file0",
     STAGING + "/dir1",
@@ -66,6 +67,7 @@ INIT_FILES = {
     OVERLAYS + "/overlay1/dir1/fileB": "b",
     OVERLAYS + "/overlay2/dir1/fileB": "c",
     OVERLAYS + "/overlay2/dir1/fileC": "d",
+    OVERLAYS + "/overlay2/dir1/dir2/fileE": "!",
     OVERLAYS + "/overlay3/dir1/fileD": "e",
     STAGING + "/dir1/fileA": "f",
 }
@@ -158,7 +160,7 @@ class TestOverlays(t.TestCase):
         ans = c.run_script(cmd.encode(), rootfs=True)
         self.assertEqual(ans.returncode, 0)
         self.assertEqual(ans.stdout.decode("utf8").strip(), "644 0 0")
-    
+
     def test_whiteout(self):
         cmd = f"rm -f {STAGING}/file2"
         ans = c.run_script(cmd.encode(), rootfs=True)
@@ -175,6 +177,27 @@ class TestOverlays(t.TestCase):
 
         self._assert_guest_reads(STAGING + "/file2", "b")
         self._assert_guest_listdir(STAGING, ["dir1", "file0", "file1", "file2", "file3", "file4", "file5"])
+        self._assert_host_reads(OVERLAYS + "/overlay1/file2", "1")
+        self._assert_host_reads(OVERLAYS + "/overlay2/file2", "3")
+        self._assert_host_reads(STAGING + "/file2", "b")
+
+    def test_move_file(self):
+        cmd = f"mv {STAGING}/file2 {STAGING}/file6"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+
+        self._assert_guest_listdir(STAGING, ["dir1", "file0", "file1", "file3", "file4", "file5", "file6"])
+        self._assert_guest_reads(STAGING + "/file6", "3")
+        self._assert_host_reads(OVERLAYS + "/overlay1/file2", "1")
+        self._assert_host_reads(OVERLAYS + "/overlay2/file2", "3")
+        self.assertFalse(os.path.exists(STAGING + "/file2"))
+
+        cmd = f"echo -n 'b' > {STAGING}/file2"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+
+        self._assert_guest_reads(STAGING + "/file2", "b")
+        self._assert_guest_listdir(STAGING, ["dir1", "file0", "file1", "file2", "file3", "file4", "file5", "file6"])
         self._assert_host_reads(OVERLAYS + "/overlay1/file2", "1")
         self._assert_host_reads(OVERLAYS + "/overlay2/file2", "3")
         self._assert_host_reads(STAGING + "/file2", "b")
@@ -214,3 +237,28 @@ class TestOverlays(t.TestCase):
         self._assert_host_listdir(STAGING, ["dir1", "file0", "file1", "file2", "file3", "file4", "file5"])
         self._assert_host_listdir(STAGING + "/dir1", [])
         self.assertTrue(os.path.exists(STAGING + "/dir1"))
+
+    def test_rename_dir(self):
+        cmd = f"mv {STAGING}/dir1 {STAGING}/dirA"
+        ans = c.run_script(cmd.encode(), rootfs=True)
+        self.assertEqual(ans.returncode, 0)
+
+        self._assert_guest_listdir(STAGING, ["dirA", "file0", "file1", "file2", "file3", "file4", "file5"])
+        self._assert_guest_listdir(STAGING + "/dirA", ["dir2", "fileA", "fileB", "fileC", "fileD"])
+        self._assert_guest_listdir(STAGING + "/dirA/dir2", ["fileE"])
+        self._assert_host_listdir(OVERLAYS + "/overlay1/dir1", ["fileA", "fileB"])
+        self._assert_host_listdir(OVERLAYS + "/overlay2/dir1", ["dir2", "fileB", "fileC"])
+        self._assert_host_listdir(OVERLAYS + "/overlay2/dir1/dir2", ["fileE"])
+        self._assert_host_listdir(OVERLAYS + "/overlay3/dir1", ["fileD"])
+        self._assert_host_listdir(STAGING + "/dirA", ["dir2", "fileA", "fileB", "fileC", "fileD"])
+        self.assertFalse(os.path.exists(STAGING + "/dir1"))
+
+        expected = {
+            STAGING + "/dirA/fileA": "f",
+            STAGING + "/dirA/fileB": "c",
+            STAGING + "/dirA/fileC": "d",
+            STAGING + "/dirA/fileD": "e",
+            STAGING + "/dirA/dir2/fileE": "!",
+        }
+        for file, content in expected.items():
+            self._assert_guest_reads(file, content)
