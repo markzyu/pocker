@@ -41,7 +41,8 @@ impl FileSystem {
         let maybe_meta_path = if maybe_layer_root.is_some() {
             Self::_resolve_metadata_path(maybe_layer_root.as_ref(), path)?
         } else {
-            Self::_resolve_metadata_path(self.consts.args.rootfs.as_ref(), path)?
+            let rootfs_path = self.get_rootfs();
+            Self::_resolve_metadata_path(rootfs_path.as_ref(), path)?
         };
         event!(
             Level::TRACE,
@@ -57,7 +58,7 @@ impl FileSystem {
         path: &Path,
         update_fn: impl FnOnce(&mut RootFsMetadata) -> T,
     ) -> Result<Option<T>, SysAugError> {
-        if self.consts.args.rootfs.is_none() {
+        if !self.has_rootfs() {
             return Ok(None);
         }
         let mut result: Option<T> = None;
@@ -100,7 +101,7 @@ impl FileSystem {
     }
 
     pub fn read_metadata(&self, path: &Path) -> Result<Option<RootFsMetadata>, SysAugError> {
-        if self.consts.args.rootfs.is_none() {
+        if !self.has_rootfs() {
             return Ok(None);
         }
         if let Some(meta_path) = self.get_metadata_path(path)? {
@@ -122,7 +123,7 @@ impl FileSystem {
     }
 
     pub fn delete_metadata(&self, path: &Path) -> Result<(), SysAugError> {
-        if self.consts.args.rootfs.is_none() {
+        if !self.has_rootfs() {
             return Ok(());
         }
         if let Some(meta_path) = self.get_metadata_path(path)? {
@@ -177,7 +178,7 @@ impl FileSystem {
 
     /// This function does not check for hardlinks. But it does handle CopyOnWrite mode.
     pub fn rename_metadata(&self, path1: &Path, path2: &Path) -> Result<(), SysAugError> {
-        if self.consts.args.rootfs.is_none() {
+        if !self.has_rootfs() {
             return Ok(());
         }
 

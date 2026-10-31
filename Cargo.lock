@@ -1433,6 +1433,7 @@ dependencies = [
  "bytes",
  "clap",
  "flate2",
+ "nix",
  "oci-client",
  "oci-spec",
  "pocker-executor",

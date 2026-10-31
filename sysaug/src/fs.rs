@@ -92,6 +92,28 @@ impl FileSystem {
         }
         Ok(None)
     }
+
+    pub(crate) fn get_chroot(&self) -> Option<PathBuf> {
+        self.path_prefix.borrow().clone()
+    }
+
+    pub(crate) fn get_rootfs(&self) -> Option<PathBuf> {
+        let guard = self.path_prefix.borrow();
+        if guard.is_some() {
+            return guard.clone();
+        }
+        self.consts.args.rootfs.clone()
+    }
+
+    pub(crate) fn has_rootfs(&self) -> bool {
+        let guard = self.path_prefix.borrow();
+        guard.is_some() || self.consts.args.rootfs.is_some()
+    }
+
+    pub(crate) fn has_overlay(&self) -> bool {
+        let guard = self.metadata_layers.borrow();
+        guard.len() > 0
+    }
 }
 
 pub fn path_from_bytes(mut path_bytes: Vec<u8>) -> Result<PathBuf, SysAugError> {

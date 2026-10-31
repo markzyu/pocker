@@ -38,6 +38,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         // Run synchronous augments first
         self.augment_deletion(syscall, &state)?;
         self.augment_hardlink_following(syscall, &state)?;
+        self.augment_chroot(syscall, &state)?;
 
         let syscall_future = async {
             // Perform system call
@@ -108,6 +109,35 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             self.fs.delete_metadata(path)?;
             Ok(())
         })?;
+        Ok(())
+    }
+
+    // Skip the chroot system call, and instead update `self` with new rootfs/chroot
+    fn augment_chroot(
+        &self,
+        syscall: &SyscallInfo,
+        state: &AugmentState,
+    ) -> Result<(), SysAugError> {
+        if syscall.num != libc::SYS_chroot {
+            return Ok(());
+        }
+
+        if self.fs.has_overlay() {
+            // Chroot is not supported when overlayfs is in use.
+            state.set_skip_syscall(-libc::ENOSYS as usize);
+            return Ok(());
+        }
+
+        state.first_saved_path_mut(|path, _| {
+            if path.is_dir() {
+                self.fs.path_prefix.replace(Some(path.clone()));
+                state.set_skip_syscall(0);
+            } else {
+                state.set_skip_syscall(-libc::EACCES as usize);
+            }
+            Ok(false)
+        })?;
+
         Ok(())
     }
 

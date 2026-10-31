@@ -35,6 +35,7 @@ const ARGS_LEN: usize = 5;
 pub(crate) struct AugmentState {
     entry_regs: RefCell<GenericPurposeRegs>,
     pub(crate) orig_args: [usize; ARGS_LEN],
+    pub(crate) rootfs: Option<PathBuf>,
 
     // A list of input paths sent to the syscall
     save_paths: RefCell<[Option<PathBuf>; ARGS_LEN]>,
@@ -99,6 +100,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 let retval = -libc::ENOENT as usize;
                 return Ok(AugmentState {
                     entry_regs: RefCell::new(entry_regs),
+                    rootfs: self.fs.get_rootfs(),
                     orig_args,
                     save_paths: RefCell::new(save_paths),
                     need_skip_syscall: RefCell::new(Some(retval)),
@@ -120,6 +122,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     return Ok(AugmentState {
                         entry_regs: RefCell::new(entry_regs),
                         orig_args,
+                        rootfs: self.fs.get_rootfs(),
                         save_paths: RefCell::new(save_paths),
                         need_skip_syscall: RefCell::new(Some(retval)),
                         need_write_paths: RefCell::new(need_write_paths),
@@ -147,6 +150,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(AugmentState {
             entry_regs: RefCell::new(entry_regs),
             orig_args,
+            rootfs: self.fs.get_rootfs(),
             save_paths: RefCell::new(save_paths),
             need_skip_syscall: RefCell::new(None),
             need_write_paths: RefCell::new(need_write_paths),

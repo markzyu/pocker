@@ -671,12 +671,12 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
     /// Initialize only the first process to chdir to the chroot directory
     async fn initialize_tracee_chdir(&self) -> Result<(), SysAugError> {
-        if self.consts.args.chroot.is_none() {
-            return Ok(());
-        };
         if self.parent.is_some() {
             return Ok(());
         }
+        if self.fs.get_chroot().is_none() {
+            return Ok(());
+        };
 
         let mut workdir = PathBuf::from("/");
         if let Some(dir) = self.consts.args.workdir.clone() {

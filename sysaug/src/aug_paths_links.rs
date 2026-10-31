@@ -53,7 +53,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let Some((i, j)) = syscall.creates_hardlink else {
             return Ok(());
         };
-        let Some(metadir) = get_metadata_dir(self.consts.args.rootfs.as_ref()) else {
+        let Some(metadir) = get_metadata_dir(state.rootfs.as_ref()) else {
             return Ok(());
         };
 
@@ -91,8 +91,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 target_path
             };
 
-            let rootfs_path = self.consts.args.rootfs.as_ref().unwrap();
-            if !result_path.starts_with(rootfs_path) {
+            if !result_path.starts_with(state.rootfs.as_ref().unwrap()) {
                 state.set_skip_syscall(EACCES);
             } else if result_path.exists() {
                 state.set_skip_syscall(EEXIST);
@@ -163,7 +162,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let i = i as usize;
         let j = j as usize;
 
-        let metadir = get_metadata_dir(self.consts.args.rootfs.as_ref());
+        let metadir = get_metadata_dir(state.rootfs.as_ref());
         let Some(metadir) = metadir.as_ref() else {
             return Ok(());
         };

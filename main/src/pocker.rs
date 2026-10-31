@@ -13,6 +13,10 @@
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use flate2::read::GzDecoder;
+use nix::{
+    sys::wait::waitpid,
+    unistd::{ForkResult, chroot, fork},
+};
 use oci_client::{
     client::{Certificate, CertificateEncoding},
     manifest::{ImageIndexEntry, OciImageManifest},
@@ -22,10 +26,10 @@ use pocker::{LaunchOptions, init_logging, launch_ptrace};
 use pocker_ptrace::setup_shared_memory;
 use pocker_sysaug::{MountConfig, PermsMode, SysAugArgs, SysAugConfig, get_metadata_dir};
 use serde::{Deserialize, Serialize};
-use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
+use std::{ffi::OsString, thread::JoinHandle};
 use tracing::{Level, event};
 use webpki_root_certs::TLS_SERVER_ROOT_CERTS;
 
@@ -51,7 +55,7 @@ enum Commands {
 
         /// This is an internal option. Please do not use it unless you know what you're doing.
         #[arg(long)]
-        internal_layer: Option<String>,
+        internal_layer: Vec<String>,
 
         #[command(flatten)]
         launch: LaunchOptions,
@@ -110,10 +114,14 @@ struct ImageDownloadArgs {
 
     #[arg(long)]
     redownload: bool,
+
+    /// Number of threads to use when untarring layers
+    #[arg(long, default_value_t = 2)]
+    num_threads: usize,
 }
 
 impl ImageDownloadArgs {
-    fn push_os_strings(&self, ans: &mut Vec<OsString>) -> () {
+    fn deserialize(&self, ans: &mut Vec<OsString>) {
         if let Some(path) = self.storage_path.as_ref() {
             ans.push("--storage-path".into());
             ans.push(path.clone().into_os_string());
@@ -205,9 +213,33 @@ fn main() -> anyhow::Result<()> {
             launch,
             download,
         } => {
-            if let Some(layer) = internal_layer {
-                event!(Level::INFO, "Downloading layer {}...", &layer);
-                untar_layer_from_tracee(layer, &download)?;
+            if internal_layer.len() > 0 {
+                let mut handles: Vec<JoinHandle<anyhow::Result<()>>> = Vec::new();
+                for i in 0..download.num_threads {
+                    let batch: Vec<String> = internal_layer
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, layer)| {
+                            if idx % download.num_threads == i {
+                                Some(layer.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    let download2 = download.clone();
+                    let handle = std::thread::spawn(move || {
+                        for layer in batch {
+                            event!(Level::INFO, "Downloading layer {}...", &layer);
+                            untar_layer_from_tracee(layer, &download2)?;
+                        }
+                        anyhow::Ok(())
+                    });
+                    handles.push(handle);
+                }
+                for handle in handles {
+                    handle.join().expect("Failed to complete untar thread")?;
+                }
             } else {
                 let (shared_fd, mmap_addr) = setup_shared_memory().context("Preparing ptrace")?;
                 let layers = download_image(image.clone(), &launch, &download)?;
@@ -253,7 +285,14 @@ fn resolver_for_linux(manifests: &[ImageIndexEntry]) -> Option<String> {
         .map(|entry| entry.digest.clone())
 }
 
+/// Fork, Chroot, and Untar the layer from the tracee
 fn untar_layer_from_tracee(layer: String, download: &ImageDownloadArgs) -> anyhow::Result<()> {
+    let result = unsafe { fork() }.context("Failed to create a new process during untar")?;
+    if let ForkResult::Parent { child } = result {
+        waitpid(child, None).context("Failed to wait for child process during untar")?;
+        return Ok(());
+    }
+
     let storage_dir = get_storage_dir(&download)?;
     let layers_dir = storage_dir.join("layers");
     let cache_dir = storage_dir.join("cache");
@@ -261,10 +300,14 @@ fn untar_layer_from_tracee(layer: String, download: &ImageDownloadArgs) -> anyho
     let tar_path = cache_dir.join(tar_name);
     let layer_dir = layers_dir.join(&layer);
 
+    // Open the file before chroot.
     let tar_file = std::fs::File::open(tar_path)?;
+
+    chroot(&layer_dir).context("Failed to chroot to layer directory during untar")?;
+
     let mut gz = GzDecoder::new(tar_file);
     let mut tar = tar::Archive::new(&mut gz);
-    tar.unpack(&layer_dir)?;
+    tar.unpack("/")?;
     Ok(())
 }
 
@@ -389,7 +432,7 @@ fn download_image(
 
     let (cache_dir, cache_name) = get_cache_path(args, &reference_str)?;
     let cache_path = cache_dir.join(&cache_name);
-    if cache_path.exists() {
+    if cache_path.exists() && !args.redownload {
         let err_ctx = "Checking cached image digests";
         let mut file = std::fs::File::open(&cache_path).context(err_ctx)?;
         let mut cached_image = String::new();
@@ -402,7 +445,7 @@ fn download_image(
             let actual: Vec<_> = hashes.iter().map(|x| x.to_string()).collect();
             let expected: Vec<_> = image.layers.iter().map(|x| x.digest.clone()).collect();
 
-            if actual == expected && !args.redownload {
+            if actual == expected {
                 // TODO: actually check hashes of tar files
                 return Ok(actual);
             }
@@ -466,6 +509,7 @@ fn launch_ptrace_to_untar_layers(
     std::fs::create_dir_all(&layers_dir).context("Creating pocker download cache")?;
 
     let mut layer_dirs: Vec<PathBuf> = Vec::new();
+    let mut layer_digests: Vec<String> = Vec::new();
     for digest in layers {
         let layer_dir = layers_dir.join(&digest);
         layer_dirs.push(layer_dir.clone());
@@ -481,36 +525,41 @@ fn launch_ptrace_to_untar_layers(
         }
 
         std::fs::create_dir_all(&layer_dir).context("Creating untarred layer dir")?;
+        layer_digests.push(digest.clone());
+    }
 
-        event!(Level::INFO, "Starting to untar layer {}", &digest);
-        let self_path = std::env::current_exe()?.canonicalize()?;
-        let args2 = SysAugArgs {
-            chroot: None,
-            rootfs: Some(layer_dir.clone()),
-            workdir: None,
-            perms_mode: PermsMode::RootOnly,
-            fail_fast: launch.fail_fast,
-            fix_sigsys: launch.fix_sigsys,
-            fix_mmap: launch.fix_mmap || launch.fix_attach,
-            no_seccomp: launch.no_seccomp,
-            gdb: launch.gdb,
-            gdb_at: launch.gdb_at,
-            use_native_loader: launch.use_native_loader,
-        };
+    event!(Level::INFO, "Starting to untar layers...");
+    let self_path = std::env::current_exe()?.canonicalize()?;
+    let args2 = SysAugArgs {
+        chroot: None,
+        rootfs: None,
+        workdir: None,
+        perms_mode: PermsMode::RootOnly,
+        fail_fast: launch.fail_fast,
+        fix_sigsys: launch.fix_sigsys,
+        fix_mmap: launch.fix_mmap || launch.fix_attach,
+        no_seccomp: launch.no_seccomp,
+        gdb: launch.gdb,
+        gdb_at: launch.gdb_at,
+        use_native_loader: launch.use_native_loader,
+    };
 
-        let fix_attach = launch.fix_attach;
-        let mut cmd = std::process::Command::new(&self_path);
-        let mut new_args: Vec<OsString> = Vec::new();
-        new_args.push("pull".into());
-        new_args.push(image_name.clone().into());
+    let fix_attach = launch.fix_attach;
+    let mut cmd = std::process::Command::new(&self_path);
+    let mut new_args: Vec<OsString> = Vec::new();
+
+    new_args.push("pull".into());
+    new_args.push(image_name.clone().into());
+    for digest in layer_digests {
         new_args.push("--internal-layer".into());
         new_args.push(digest.into());
-        args.push_os_strings(&mut new_args);
-        cmd.args(new_args);
+    }
 
-        if let Err(e) = launch_ptrace(args2, cmd, fix_attach, shared_fd, mmap_addr) {
-            bail!("Error: {:?}", e);
-        }
+    args.deserialize(&mut new_args);
+    cmd.args(new_args);
+
+    if let Err(e) = launch_ptrace(args2, cmd, fix_attach, shared_fd, mmap_addr) {
+        bail!("Error: {:?}", e);
     }
     Ok(layer_dirs)
 }

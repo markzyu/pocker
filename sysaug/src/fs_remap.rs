@@ -144,7 +144,8 @@ impl FileSystem {
         }
 
         if let Some(link) = Self::_read_symlink(real_path)? {
-            if let Some(metadir) = get_metadata_dir(self.consts.args.rootfs.as_ref())
+            let rootfs_path = self.get_rootfs();
+            if let Some(metadir) = get_metadata_dir(rootfs_path.as_ref())
                 && let Ok(link) = link.canonicalize()
                 && link.starts_with(&metadir)
             {
@@ -347,10 +348,10 @@ impl FileSystem {
         }
 
         // Initialize metadata by copying from the source layer
+        let dest_rootfs = self.get_rootfs();
         if let Some(src) = Self::_resolve_metadata_path(maybe_rootfs.as_ref(), real_path)?
             && src.exists()
-            && let Some(dest) =
-                Self::_resolve_metadata_path(self.consts.args.rootfs.as_ref(), path)?
+            && let Some(dest) = Self::_resolve_metadata_path(dest_rootfs.as_ref(), path)?
             && !dest.exists()
         {
             let p1 = dest.to_string_lossy().to_string();
