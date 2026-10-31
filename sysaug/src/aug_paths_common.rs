@@ -13,8 +13,11 @@
 use crate::common::{PathAction, SysAugError, SyscallInfo};
 use crate::fs::path_from_bytes;
 use crate::handler_async::{AsyncTraceeHandler, get_mem_helper};
-use pocker_ptrace::{GenericPurposeRegs, MemHelpers, setregs};
+use pocker_ptrace::{
+    GenericPurposeRegs, MemHelpers, PtraceError, setregs, write_bytes_to_tracee_global,
+};
 use std::cell::RefCell;
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use tracing::{Level, event};
 
@@ -33,6 +36,7 @@ pub(crate) struct AugmentState {
     entry_regs: RefCell<GenericPurposeRegs>,
     pub(crate) orig_args: [usize; ARGS_LEN],
 
+    // A list of input paths sent to the syscall
     save_paths: RefCell<[Option<PathBuf>; ARGS_LEN]>,
 
     need_write_regs: RefCell<bool>,
@@ -179,6 +183,50 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             ptrace_client.execute(move || setregs(pid, regs))??;
         }
         Ok(())
+    }
+
+    // Replaces any buffer on client side containing host paths with their guest versions
+    // Returns Some(-ENAMETOOLONG) if the path is too long
+    // Returns Some(length) if a new path was written
+    pub(crate) fn _aug_paths_do_update_output_path(
+        &self,
+        syscall: &SyscallInfo,
+        state: &AugmentState,
+    ) -> Result<Option<isize>, SysAugError> {
+        let Some(output_pos) = syscall.path_output_position else {
+            return Ok(None);
+        };
+        let Some(output_buffer_pos) = syscall.path_output_buffer_position else {
+            return Ok(None);
+        };
+        let output_pos = output_pos as usize;
+        let output_buffer_pos = output_buffer_pos as usize;
+
+        let arg_i = state.orig_args[output_pos];
+        let buffer_size = state.orig_args[output_buffer_pos];
+
+        let pid = self.pid;
+        let ptrace_client = &self.ptrace_client;
+        let MemHelpers {
+            read_bytes_until_zero,
+            ..
+        } = get_mem_helper();
+        let path_bytes = ptrace_client.execute(move || (read_bytes_until_zero)(pid, arg_i))??;
+        let orig_path = path_from_bytes(path_bytes)?;
+        let guest_path = self.fs.calc_guest_path_from_dirfd(&None, &orig_path);
+        let Some(guest_path) = guest_path else {
+            return Ok(None);
+        };
+
+        let maybe_written = ptrace_client.execute(move || {
+            let guest_bytes = guest_path.as_os_str().as_bytes();
+            write_bytes_to_tracee_global(pid, arg_i, guest_bytes, buffer_size)
+        })?;
+        match maybe_written {
+            Ok(written) => Ok(Some(written as isize)),
+            Err(PtraceError::BufferOverflow(..)) => Ok(Some(-libc::ENAMETOOLONG as isize)),
+            Err(e) => Err(e.into()),
+        }
     }
 
     fn get_dirfd_path(

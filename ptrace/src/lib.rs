@@ -18,8 +18,8 @@ pub use crate::common::{
     CHeader, CStruct, GenericPurposeRegs, MAX_NUM_TRACEES, MemHelpers, NixISize,
     PTRACE_GETEVENTMSG, PtraceError, SHARED_MMAP_SIZE, SHARED_REGIONS, STACK_SAFE_ZONE_SIZE,
     SharedRegionContent, USIZE_SIZE, getregs, read_bytes_to_fixed_sized_objs,
-    read_bytes_to_structs, setregs, write, write_fixed_sized_objs_to_tracee,
-    write_structs_to_tracee,
+    read_bytes_to_structs, setregs, write, write_bytes_to_tracee_global,
+    write_fixed_sized_objs_to_tracee, write_structs_to_tracee,
 };
 pub use crate::mem_direct::{DIRECT_MEM_HELPERS, get_own_region_id, set_tracee_write_region_addr};
 pub use crate::mem_slow::SLOW_MEM_HELPERS;

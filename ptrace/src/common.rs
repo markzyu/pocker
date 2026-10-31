@@ -536,6 +536,48 @@ where
     Ok(curr_addr - addr)
 }
 
+/// Write bytes to any location in tracee's memory
+///
+/// Different from MemHelpers::write_bytes_to_tracee, this function writes to any location in tracee's memory, not just the stack.
+///
+/// Returns the number of bytes written (including the null terminator, including any alignment padding)
+///
+/// Or, return None if the buffer is too small to fit the bytes
+pub fn write_bytes_to_tracee_global(
+    pid: nix::unistd::Pid,
+    addr: usize,
+    bytes: &[u8],
+    buffer_size: usize,
+) -> Result<usize, PtraceError> {
+    event!(
+        Level::TRACE,
+        "Writing ~{} bytes to tracee buffer, {:#x}",
+        bytes.len(),
+        addr
+    );
+    let remainder = bytes.len() % USIZE_SIZE;
+    let final_len = bytes.len() + (USIZE_SIZE - remainder);
+    let mut final_bytes: Vec<u8> = vec![0; final_len];
+    final_bytes[..bytes.len()].copy_from_slice(bytes);
+
+    if final_len > buffer_size {
+        return Err(PtraceError::BufferOverflow(final_len, 0, buffer_size));
+    }
+
+    let buffer: &[usize] = unsafe {
+        let ptr = final_bytes.as_ptr() as *const usize;
+        let len = final_len / USIZE_SIZE;
+        std::slice::from_raw_parts(ptr, len)
+    };
+
+    let mut curr_addr = addr;
+    for machine_word in buffer.iter() {
+        write(pid, curr_addr, *machine_word)?;
+        curr_addr = checked_add(curr_addr, USIZE_SIZE)?;
+    }
+    Ok(curr_addr - addr)
+}
+
 pub fn write_fixed_sized_objs_to_tracee<T>(
     pid: nix::unistd::Pid,
     addr: usize,

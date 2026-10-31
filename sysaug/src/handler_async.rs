@@ -680,7 +680,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
 
         let mut workdir = PathBuf::from("/");
         if let Some(dir) = self.consts.args.workdir.clone() {
-            if !dir.is_empty() {
+            if !dir.as_os_str().is_empty() {
                 workdir = dir;
             }
         }

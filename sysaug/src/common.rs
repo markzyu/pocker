@@ -321,6 +321,8 @@ pub struct SyscallInfo {
     // "positions" = Bitwise representation. Bit0: arg0 is path. Bit1 = arg1 ...
     // "position" = None, or, Some(register) (0 = arg0, 1 = arg1, 2 = arg2 ...)
     pub path_positions: usize,
+    pub path_output_position: Option<u8>,
+    pub path_output_buffer_position: Option<u8>,
     pub dirfd_position: Option<u8>,
     pub filefd_position: Option<u8>,
     pub dirfd_precedes_path: bool,
@@ -383,6 +385,8 @@ pub const fn default_syscall_info() -> SyscallInfo {
         augment: Augments::None,
         flags: None,
         path_positions: 0,
+        path_output_position: None,
+        path_output_buffer_position: None,
         dirfd_position: None,
         filefd_position: None,
         dirfd_precedes_path: false,

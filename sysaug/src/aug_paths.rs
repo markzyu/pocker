@@ -14,7 +14,7 @@ use crate::PermType;
 use crate::aug_paths_common::{AugmentState, FILE_PERMS_MASK, StrongWeakBuilder, StrongWeakOutput};
 use crate::common::{SysAugError, SyscallInfo};
 use crate::handler_async::AsyncTraceeHandler;
-use pocker_ptrace::{GenericPurposeRegs, getregs};
+use pocker_ptrace::{GenericPurposeRegs, getregs, setregs};
 use std::cell::RefCell;
 use std::pin::{Pin, pin};
 use tracing::{Level, event};
@@ -48,9 +48,17 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 let regs = ptrace_client.execute(move || getregs(pid))??;
                 StrongWeakOutput::Ok((regs, retval as isize))
             } else {
-                let regs = self.do_resume_syscall().await?;
-                let retval = regs.syscall_retval();
-                StrongWeakOutput::Ok((regs, retval as isize))
+                let mut regs = self.do_resume_syscall().await?;
+                let orig_retval = regs.syscall_retval();
+                let new_retval = self._aug_paths_do_update_output_path(syscall, &state)?;
+                let retval = new_retval.unwrap_or(orig_retval as isize);
+                if let Some(val) = new_retval {
+                    regs.set_syscall_retval(val as usize);
+
+                    let regs2 = regs.clone();
+                    ptrace_client.execute(move || setregs(pid, regs2))??;
+                }
+                StrongWeakOutput::Ok((regs, retval))
             }
         };
         let strong_builder = krsm::upgrade(syscall_future);

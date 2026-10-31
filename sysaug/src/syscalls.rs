@@ -343,8 +343,14 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
     define_seccomp_syscall!(libc::SYS_prctl, 1, iter, next);
     define_seccomp_syscall!(libc::SYS_seccomp, 0, iter, next);
 
-    define_paths_syscall!(libc::SYS_acct, 1, iter, next);
     define_paths_syscall!(libc::SYS_chdir, 1, iter, next);
+    define_paths_syscall!(libc::SYS_getcwd, 0, iter, next);
+    if let Some(val) = iter[next].as_mut() {
+        val.path_output_position = Some(0);
+        val.path_output_buffer_position = Some(1);
+    }
+
+    define_paths_syscall!(libc::SYS_acct, 1, iter, next);
     define_paths_syscall!(libc::SYS_chroot, 1, iter, next);
     define_paths_syscall!(libc::SYS_getxattr, 1, iter, next);
     define_paths_syscall!(libc::SYS_listxattr, 1, iter, next);
@@ -383,6 +389,8 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
 
     define_dirfd_syscall!(libc::SYS_readlinkat, 2, 0, iter, next);
     if let Some(val) = iter[next].as_mut() {
+        val.path_output_position = Some(2);
+        val.path_output_buffer_position = Some(3);
         val.dont_follow_symlink = true;
         val.should_follow_hardlink = true;
     }
@@ -587,6 +595,8 @@ pub const RAW_SYSCALL_INFOS: [Option<SyscallInfo>; MAX_RAW_SYSCALL_INFOS] = {
 
         define_paths_syscall!(libc::SYS_readlink, 1, iter, next);
         if let Some(val) = iter[next].as_mut() {
+            val.path_output_position = Some(1);
+            val.path_output_buffer_position = Some(2);
             val.dont_follow_symlink = true;
             val.should_follow_hardlink = true;
         }
