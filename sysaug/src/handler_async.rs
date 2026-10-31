@@ -11,7 +11,9 @@
 // GNU General Public License for more details.
 
 use crate::common::{
-    Augments, NO_MOD_SYSCALL, PR_SET_NO_NEW_PRIVS, PTRACE_EVENT_SECCOMP, PathAction, SECCOMP_FILTER_FLAG_TSYNC, SECCOMP_SET_MODE_FILTER, SI_CODE_SYS_SECCOMP, SYS_MMAP, SYS_MMAP_PGOFFSET_BLOCK, SysAugError, display_err, rwlock_read,
+    Augments, NO_MOD_SYSCALL, PR_SET_NO_NEW_PRIVS, PTRACE_EVENT_SECCOMP, PathAction,
+    SECCOMP_FILTER_FLAG_TSYNC, SECCOMP_SET_MODE_FILTER, SI_CODE_SYS_SECCOMP, SYS_MMAP,
+    SYS_MMAP_PGOFFSET_BLOCK, SysAugError, display_err, rwlock_read,
 };
 use crate::config::PERMS_IDS_SIZE;
 use crate::fs::FileSystem;

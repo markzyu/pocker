@@ -49,10 +49,12 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 StrongWeakOutput::Ok((regs, retval as isize))
             } else {
                 let mut regs = self.do_resume_syscall().await?;
-                let orig_retval = regs.syscall_retval();
+                let mut retval = regs.syscall_retval() as isize;
                 let new_retval = self._aug_paths_do_update_output_path(syscall, &state)?;
-                let retval = new_retval.unwrap_or(orig_retval as isize);
-                if let Some(val) = new_retval {
+                if let Some(val) = new_retval
+                    && retval >= 0
+                {
+                    retval = val;
                     regs.set_syscall_retval(val as usize);
 
                     let regs2 = regs.clone();
