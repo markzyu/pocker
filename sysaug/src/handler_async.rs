@@ -684,7 +684,6 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 workdir = dir;
             }
         }
-        event!(Level::WARN, "TESTT {:?}", &workdir);
         let chroot_addr = self.tracee_stack_append_path(workdir)?;
         let chdir_regs = unsafe {
             self._insert_syscall_during_init(
