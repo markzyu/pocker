@@ -11,9 +11,7 @@
 // GNU General Public License for more details.
 
 use crate::common::{
-    Augments, NO_MOD_SYSCALL, PR_SET_NO_NEW_PRIVS, PTRACE_EVENT_SECCOMP, SECCOMP_FILTER_FLAG_TSYNC,
-    SECCOMP_SET_MODE_FILTER, SI_CODE_SYS_SECCOMP, SYS_MMAP, SYS_MMAP_PGOFFSET_BLOCK, SysAugError,
-    display_err, rwlock_read,
+    Augments, NO_MOD_SYSCALL, PR_SET_NO_NEW_PRIVS, PTRACE_EVENT_SECCOMP, PathAction, SECCOMP_FILTER_FLAG_TSYNC, SECCOMP_SET_MODE_FILTER, SI_CODE_SYS_SECCOMP, SYS_MMAP, SYS_MMAP_PGOFFSET_BLOCK, SysAugError, display_err, rwlock_read,
 };
 use crate::config::PERMS_IDS_SIZE;
 use crate::fs::FileSystem;
@@ -684,6 +682,17 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 workdir = dir;
             }
         }
+
+        // Calculate the real path of workdir in CoW mode (with mkdir instead of chdir)
+        let (maybe_syscall, _) = get_syscall(libc::SYS_mkdir as usize);
+        let syscall = maybe_syscall.ok_or(SysAugError::InitWorkdir)?;
+        let maybe_workdir = self.fs.calc_real_path(workdir.as_path(), syscall, &[])?;
+        let PathAction::Override(workdir) = maybe_workdir else {
+            return Err(SysAugError::InitWorkdir);
+        };
+
+        std::fs::create_dir_all(&workdir).map_err(|_| SysAugError::InitWorkdir)?;
+
         let chroot_addr = self.tracee_stack_append_path(workdir)?;
         let chdir_regs = unsafe {
             self._insert_syscall_during_init(
@@ -694,7 +703,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             .await?
         };
         if chdir_regs.syscall_retval() != 0 {
-            return Err(SysAugError::ChdirInit);
+            return Err(SysAugError::InitWorkdir);
         }
         Ok(())
     }

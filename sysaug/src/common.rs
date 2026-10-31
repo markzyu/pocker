@@ -140,8 +140,8 @@ pub enum SysAugError {
     #[error("Failed to initialize seccomp")]
     SeccompInit,
 
-    #[error("Failed to initialize chdir")]
-    ChdirInit,
+    #[error("Failed to initialize tracee workdir")]
+    InitWorkdir,
 
     #[error("Failed to read rootfs metadata json: {0}")]
     ParseRootFsMetadata(serde_json::Error),
