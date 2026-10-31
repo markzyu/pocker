@@ -286,7 +286,8 @@ impl FileSystem {
         }
 
         let mut is_cow = false;
-        if _exists_nofollow(path) && overlay_type != Some(OverlayFileType::Placeholder) {
+        let both_exist = _exists_nofollow(path) && _exists_nofollow(real_path);
+        if both_exist && overlay_type != Some(OverlayFileType::Placeholder) {
             is_cow = true;
         } else if syscall.writes_file || syscall.deletion_type.is_some() {
             is_cow = true;

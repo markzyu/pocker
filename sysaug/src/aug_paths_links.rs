@@ -149,43 +149,61 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         Ok(())
     }
 
-    pub(crate) async fn augment_hardlink_rename<F: Future<Output = StrongWeakOutput>>(
+    pub(crate) async fn augment_rename<F: Future<Output = StrongWeakOutput>>(
         &self,
         future_builder: Pin<&StrongWeakBuilder<F>>,
         syscall: &SyscallInfo,
         state: &AugmentState,
     ) -> Result<(), Option<SysAugError>> {
-        // First, check for hardlinks
-        // Handle rename when target is a hardlink
         let Some((i, j)) = syscall.renames_metadata else {
             return Ok(());
         };
-        let metadir = get_metadata_dir(self.consts.args.rootfs.as_ref());
         let i = i as usize;
         let j = j as usize;
 
-        if let Some(metadir) = metadir.as_ref() {
-            state.saved_path_pair(i, j, |path1, path2| {
-                let Ok(path1) = path1.canonicalize() else {
-                    return Ok(());
-                };
-                let Ok(path2) = path2.canonicalize() else {
-                    return Ok(());
-                };
-                if !path1.exists() || !path2.exists() {
-                    return Ok(());
-                }
-                let is_hardlink1 = path1.starts_with(metadir);
-                let is_hardlink2 = path2.starts_with(metadir);
-                if is_hardlink1 && is_hardlink2 && path1 == path2 {
-                    state.set_skip_syscall(0);
-                } else if is_hardlink2 {
-                    // Decrease reference counter by 1
-                    self.fs.delete_metadata(path2.as_path())?;
-                }
-                Ok(())
-            })?;
+        let metadir = get_metadata_dir(self.consts.args.rootfs.as_ref());
+        let Some(metadir) = metadir.as_ref() else {
+            return Ok(());
+        };
+
+        let mut skip_due_to_exdev = false;
+        state.saved_path_idx(i, |path| {
+            // First, check for directories in overlay mounts
+            if let Some(meta) = self.fs.read_metadata(path)?
+                && meta.overlay_type.is_some()
+                && path.is_dir()
+            {
+                skip_due_to_exdev = true;
+            }
+            Ok(())
+        })?;
+        if skip_due_to_exdev {
+            state.set_skip_syscall(-libc::EXDEV as usize);
+            return Ok(());
         }
+
+        // Then, check for hardlinks
+        // Handle rename when target is a hardlink
+        state.saved_path_pair(i, j, |path1, path2| {
+            let Ok(path1) = path1.canonicalize() else {
+                return Ok(());
+            };
+            let Ok(path2) = path2.canonicalize() else {
+                return Ok(());
+            };
+            if !path1.exists() || !path2.exists() {
+                return Ok(());
+            }
+            let is_hardlink1 = path1.starts_with(metadir);
+            let is_hardlink2 = path2.starts_with(metadir);
+            if is_hardlink1 && is_hardlink2 && path1 == path2 {
+                state.set_skip_syscall(0);
+            } else if is_hardlink2 {
+                // Decrease reference counter by 1
+                self.fs.delete_metadata(path2.as_path())?;
+            }
+            Ok(())
+        })?;
 
         // Resume system call, and drop the WeakFutureGuard
         let retval = {
@@ -198,18 +216,16 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         }
 
         // After system call: Names are different from before-syscall because files changed
-        if let Some(metadir) = metadir.as_ref() {
-            let mut is_hardlink2: bool = false;
-            state.saved_path_idx(j, |path2| {
-                let Ok(path2) = path2.canonicalize() else {
-                    return Ok(());
-                };
-                is_hardlink2 = path2.starts_with(metadir);
-                Ok(())
-            })?;
-            if is_hardlink2 {
+        let mut is_hardlink2: bool = false;
+        state.saved_path_idx(j, |path2| {
+            let Ok(path2) = path2.canonicalize() else {
                 return Ok(());
-            }
+            };
+            is_hardlink2 = path2.starts_with(metadir);
+            Ok(())
+        })?;
+        if is_hardlink2 {
+            return Ok(());
         }
 
         state.saved_path_pair(i, j, |path1, path2| {

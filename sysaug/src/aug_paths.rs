@@ -73,7 +73,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             ),
             futures_lite::future::try_zip(
                 self.augment_chown(strong_pinned.as_ref(), syscall, &state),
-                self.augment_hardlink_rename(strong_pinned.as_ref(), syscall, &state),
+                self.augment_rename(strong_pinned.as_ref(), syscall, &state),
             ),
         );
         let weak_group2 = futures_lite::future::try_zip(

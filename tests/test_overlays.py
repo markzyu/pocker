@@ -208,9 +208,9 @@ class TestOverlays(t.TestCase):
         self.assertEqual(ans.returncode, 0)
 
         self._assert_guest_reads(STAGING + "/dir1/fileX", "x")
-        self._assert_guest_listdir(STAGING + "/dir1", ["fileA", "fileB", "fileC", "fileD", "fileX"])
+        self._assert_guest_listdir(STAGING + "/dir1", ["dir2", "fileA", "fileB", "fileC", "fileD", "fileX"])
         self._assert_host_listdir(OVERLAYS + "/overlay1/dir1", ["fileA", "fileB"])
-        self._assert_host_listdir(OVERLAYS + "/overlay2/dir1", ["fileB", "fileC"])
+        self._assert_host_listdir(OVERLAYS + "/overlay2/dir1", ["dir2", "fileB", "fileC"])
         self._assert_host_listdir(OVERLAYS + "/overlay3/dir1", ["fileD"])
         self.assertTrue(os.path.exists(STAGING + "/dir1"))
 
@@ -220,7 +220,7 @@ class TestOverlays(t.TestCase):
 
         self._assert_guest_listdir(STAGING, ["file0", "file1", "file2", "file3", "file4", "file5"])
         self._assert_host_listdir(OVERLAYS + "/overlay1/dir1", ["fileA", "fileB"])
-        self._assert_host_listdir(OVERLAYS + "/overlay2/dir1", ["fileB", "fileC"])
+        self._assert_host_listdir(OVERLAYS + "/overlay2/dir1", ["dir2", "fileB", "fileC"])
         self._assert_host_listdir(OVERLAYS + "/overlay3/dir1", ["fileD"])
         self._assert_host_listdir(STAGING, ["file0", "file1", "file2", "file3", "file4", "file5"])
         self.assertFalse(os.path.exists(STAGING + "/dir1"))
@@ -232,7 +232,7 @@ class TestOverlays(t.TestCase):
         self._assert_guest_listdir(STAGING, ["dir1", "file0", "file1", "file2", "file3", "file4", "file5"])
         self._assert_guest_listdir(STAGING + "/dir1", [])
         self._assert_host_listdir(OVERLAYS + "/overlay1/dir1", ["fileA", "fileB"])
-        self._assert_host_listdir(OVERLAYS + "/overlay2/dir1", ["fileB", "fileC"])
+        self._assert_host_listdir(OVERLAYS + "/overlay2/dir1", ["dir2", "fileB", "fileC"])
         self._assert_host_listdir(OVERLAYS + "/overlay3/dir1", ["fileD"])
         self._assert_host_listdir(STAGING, ["dir1", "file0", "file1", "file2", "file3", "file4", "file5"])
         self._assert_host_listdir(STAGING + "/dir1", [])
