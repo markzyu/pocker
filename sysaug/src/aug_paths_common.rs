@@ -137,7 +137,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let position = position as usize;
             let fd = orig_args[position] as isize;
             let fd_path = pocker_procfs::getfd_path(pid, fd)?.unwrap_or("".into());
-            event!(Level::INFO, "filefd path {:?}", &fd_path);
+            event!(Level::DEBUG, "filefd path {:?}", &fd_path);
 
             // There is no need to calc_real_path, and no need to update register,
             // because pocker cannot override real fds

@@ -458,7 +458,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
     /// Skip the system call (clobbering current tracee register states, setting sysret=0)
     pub async fn do_skip_syscall(&self, syscall_retval: usize) -> Result<(), SysAugError> {
         let pid = self.pid;
-        event!(Level::INFO, "Attempting to skip syscall");
+        event!(Level::DEBUG, "Attempting to skip syscall");
         self.ptrace_client
             .execute(move || set_syscall_num(pid, NO_MOD_SYSCALL))??;
 
@@ -586,7 +586,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
             let (_, orig_syscall_name) = get_syscall(regs.syscall_num());
             self.orig_syscall_num.replace(Some(regs.syscall_num()));
             event!(
-                Level::INFO,
+                Level::DEBUG,
                 "TraceeInit: Overriding first syscall, was {:?}",
                 orig_syscall_name
             );

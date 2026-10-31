@@ -10,6 +10,8 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
+use tracing::{Level, event};
+
 use crate::aug_paths_common::{AugmentState, StrongWeakBuilder, StrongWeakOutput};
 use crate::common::{SysAugError, SyscallInfo, get_metadata_dir};
 use crate::display_err;
@@ -173,6 +175,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 && meta.overlay_type.is_some()
                 && path.is_dir()
             {
+                event!(Level::INFO, "Skipping rename of {:?} due to EXDEV", path);
                 skip_due_to_exdev = true;
             }
             Ok(())

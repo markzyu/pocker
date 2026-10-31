@@ -63,7 +63,7 @@ impl FileSystem {
         let mut result: Option<T> = None;
         if let Some(meta_path) = self.get_metadata_path(path)? {
             event!(
-                Level::INFO,
+                Level::DEBUG,
                 "Writing metadata file: {:?}",
                 meta_path.to_string_lossy()
             );

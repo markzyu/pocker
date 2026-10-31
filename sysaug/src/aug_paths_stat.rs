@@ -78,7 +78,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let mut stats: Vec<T> = ptrace_client
             .execute(move || read_bytes_to_fixed_sized_objs(pid, addr, 1, mem_helpers))??;
         event!(
-            Level::INFO,
+            Level::DEBUG,
             "Intercepting {} stat entries for {:?}.",
             stats.len(),
             path
@@ -92,7 +92,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                 let old_mode = x.get_mode();
                 let new_mode = (old_mode & !FILE_PERMS_MASK) | (*chmod & FILE_PERMS_MASK);
                 event!(
-                    Level::INFO,
+                    Level::DEBUG,
                     "Faking new file modes: {:?}: {:x} -> {:x}",
                     path,
                     old_mode,

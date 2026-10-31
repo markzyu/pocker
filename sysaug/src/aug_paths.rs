@@ -138,7 +138,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         let new_group = state.orig_args[(*position + 1) as usize];
         state.for_saved_path(|path| {
             event!(
-                Level::INFO,
+                Level::DEBUG,
                 "Handling chown: {:?}, {}, {}",
                 &path,
                 new_owner,
@@ -180,7 +180,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
         // After system call
         let new_mod = state.orig_args[*position as usize];
         state.for_saved_path(|path| {
-            event!(Level::INFO, "Handling chmod: {:?}, {:b}", &path, new_mod);
+            event!(Level::DEBUG, "Handling chmod: {:?}, {:b}", &path, new_mod);
             let new_mod = new_mod & FILE_PERMS_MASK;
             self.fs.save_metadata(path, |x| x.chmod = Some(new_mod))?;
             Ok(())
@@ -233,7 +233,7 @@ impl<PtraceClient: pocker_executor::PtraceClient> AsyncTraceeHandler<'_, PtraceC
                     return Ok(());
                 }
 
-                event!(Level::INFO, "Handling chmod: {:?}, {:b}", &path, new_mod);
+                event!(Level::DEBUG, "Handling chmod: {:?}, {:b}", &path, new_mod);
                 let new_mod = new_mod & FILE_PERMS_MASK;
                 self.fs.save_metadata(path, |x| x.chmod = Some(new_mod))?;
                 Ok(())
